@@ -1,0 +1,22 @@
+{
+  "name": "daw",
+  "displayName": "DAW — Dilux Agentic Workflow",
+  "version": "1.0.1",
+  "description": "An agent-driven development pipeline: phases in order, gates enforced by hooks outside the model, auditors that did not write the code they review, and state that survives closing the session.",
+  "author": {
+    "name": "Pablo Ariel Di Loreto",
+    "url": "https://github.com/soydiloreto"
+  },
+  "homepage": "https://github.com/soydiloreto/dilux-agentic-workflow",
+  "repository": "https://github.com/soydiloreto/dilux-agentic-workflow",
+  "license": "Apache-2.0",
+  "keywords": [
+    "agentic",
+    "workflow",
+    "spec-driven",
+    "pipeline",
+    "orchestration"
+  ],
+  "skills": "./skills/",
+  "hooks": "./adapters/cursor/plugin-hooks.json"
+}

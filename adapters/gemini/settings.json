@@ -1,0 +1,58 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "name": "daw-session-start",
+            "type": "command",
+            "command": "bash \"$GEMINI_PROJECT_DIR/.gemini/hooks/daw/session-start.sh\"",
+            "description": "DAW: boot the pipeline for this session",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "matcher": "write_file|replace",
+        "hooks": [
+          {
+            "name": "daw-validate-transition",
+            "type": "command",
+            "command": "bash \"$GEMINI_PROJECT_DIR/.gemini/hooks/daw/pre-tool-use.sh\"",
+            "description": "DAW: refuse a write that would break the state machine",
+            "timeout": 15000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "write_file|replace|run_shell_command",
+        "hooks": [
+          {
+            "name": "daw-revalidate-state",
+            "type": "command",
+            "command": "bash \"$GEMINI_PROJECT_DIR/.gemini/hooks/daw/post-write.sh\"",
+            "description": "DAW: catch a state edited around the pre-write hook",
+            "timeout": 15000
+          }
+        ]
+      }
+    ],
+    "PreCompress": [
+      {
+        "hooks": [
+          {
+            "name": "daw-pre-compress",
+            "type": "command",
+            "command": "bash \"$GEMINI_PROJECT_DIR/.gemini/hooks/daw/pre-compact.sh\"",
+            "description": "DAW: re-read the pipeline after compression, never infer it",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}
