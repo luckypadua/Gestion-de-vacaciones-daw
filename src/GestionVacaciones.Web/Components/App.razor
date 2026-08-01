@@ -1,0 +1,30 @@
+@* Documento raíz de la aplicación. Carga los recursos de MudBlazor y monta el enrutador. *@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <link rel="stylesheet" href="_content/MudBlazor/MudBlazor.min.css" />
+    <link rel="stylesheet" href="app.css" />
+    <title>Gestión de Vacaciones</title>
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+
+<body>
+    <Routes @rendermode="InteractiveServer" />
+
+    @* blazor.web.js busca este id cuando el circuito se cae y lo hace visible. Sin el elemento, la
+       caída es silenciosa: el usuario sigue haciendo clic sobre una interfaz que ya no responde. El
+       estilo vive en app.css, que lo mantiene oculto hasta que el framework lo muestre. *@
+    <div id="blazor-error-ui">
+        Se perdió la conexión con el servidor.
+        <a href="" class="recargar">Recargar</a>
+    </div>
+
+    <script src="_framework/blazor.web.js"></script>
+    <script src="_content/MudBlazor/MudBlazor.min.js"></script>
+</body>
+
+</html>

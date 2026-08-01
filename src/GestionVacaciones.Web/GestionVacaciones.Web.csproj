@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>GestionVacaciones.Web</RootNamespace>
+    <AssemblyName>GestionVacaciones.Web</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <!-- La cadena de conexión de desarrollo vive en user-secrets, nunca en el repositorio (R-02). -->
+    <UserSecretsId>gestion-vacaciones-v2-web</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MudBlazor" Version="9.7.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GestionVacaciones.Data\GestionVacaciones.Data.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="GestionVacaciones.Data/GestionVacaciones.Data.csproj" />
+    <Project Path="GestionVacaciones.Web/GestionVacaciones.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="../tests/GestionVacaciones.Tests/GestionVacaciones.Tests.csproj" />
+  </Folder>
+</Solution>

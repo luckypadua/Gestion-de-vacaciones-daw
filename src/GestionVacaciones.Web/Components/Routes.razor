@@ -1,0 +1,7 @@
+@* Enrutador de la aplicación. Las páginas llegan en el Block 6. *@
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="rutaEncontrada">
+        <RouteView RouteData="rutaEncontrada" DefaultLayout="typeof(MainLayout)" />
+        <FocusOnNavigate RouteData="rutaEncontrada" Selector="h1" />
+    </Found>
+</Router>
