@@ -7,6 +7,7 @@
 | Fecha | 2026-08-01 |
 | PRD | `docs/daw/prd/prd-FEAT-001a.md` |
 | Diseño analizado | 6 bloques, Blazor Server + MudBlazor + EF Core 10 + SQL Server 2022 |
+| Revisiones | 2 — la segunda (2026-08-02) por el cambio de infraestructura de tests |
 
 > **Premisa que domina todo el análisis:** este sub-ticket construye una aplicación **sin
 > autenticación y sin autorización entre empleados**. PRD-001 RF-01 (OAuth), RF-09 y AC-11 (HTTP 403)
@@ -47,7 +48,7 @@ trabajo.
 |---|---|---|---|
 | **TB-1** | Navegador → circuito Blazor Server | Fechas del formulario, selección de empleado, eventos de UI sobre SignalR | No confiable → confiable |
 | **TB-2** | Host → SQL Server 2022 | Consultas EF Core, credenciales de conexión | Confiable → confiable, sobre red no confiable |
-| **TB-3** | Host de desarrollo → daemon de Docker | Testcontainers levantando `mssql/server:2022` | Solo desarrollo. El socket de Docker es equivalente a root en la máquina. |
+| **TB-3** | Suite de tests → instancia SQL Server 2022 del entorno | Migraciones, inserciones y borrados de los tests de integración | Solo desarrollo. **La instancia aloja además las bases reales `GestionVacacionesV2` y `GestionVacaciones` (v1).** Ver R-11. |
 | **TB-4** | Repositorio público → configuración | `appsettings*.json`, `.gitignore`, `launchSettings.json` | Todo lo versionado es público por definición |
 | **TB-5** | Empleado A → datos del empleado B | `SolicitudesService`, `PermisosService`, `EmpleadosService` | **Frontera declarada pero NO aplicada en este ticket.** Es el centro del riesgo R-01. |
 
@@ -121,13 +122,21 @@ trabajo.
 | **D** | Cada circuito mantiene estado en el servidor. → **R-06** |
 | **E** | El selector es el vector; ver R-01. |
 
-### C7 — Infraestructura de tests (Testcontainers, TB-3)
+### C7 — Infraestructura de tests de integración (TB-3)
+
+> **Revisión del 2026-08-02.** Este componente era Testcontainers, que levantaba un contenedor
+> desechable y aislado. Por decisión del usuario de no depender de Docker, los tests pasan a la
+> instancia SQL Server 2022 del entorno de desarrollo. **El aislamiento deja de venir dado por la
+> infraestructura y pasa a depender del código**, lo que cambia el análisis de raíz.
 
 | STRIDE | Hallazgo |
 |---|---|
-| **S/T/I/E** | Testcontainers requiere acceso al socket de Docker, que es equivalente a root en la máquina de desarrollo. Es una dependencia de desarrollo, nunca de producción. → **R-11** |
-| **R** | Sin impacto. |
-| **D** | La imagen `mssql/server:2022` consume memoria durante la corrida. Sin impacto en producción. |
+| **S** | Los tests se autentican contra la misma instancia que aloja los datos reales. Una credencial de test filtrada alcanza esa instancia entera, no una caja desechable. → **R-11** |
+| **T** | **El riesgo central:** un test destructivo apuntado al catálogo equivocado borra o corrompe `GestionVacacionesV2` o la base v1. Con un contenedor esto era imposible por construcción; ahora hay que impedirlo explícitamente. → **R-11** |
+| **R** | Los tests escriben con la misma cuenta que cualquier otra operación de desarrollo: sin trazabilidad de qué corrida modificó qué. Impacto bajo, sobre datos de prueba. |
+| **I** | La cadena de test lleva credenciales de una instancia con datos reales. Si aparece en un mensaje de error o en un archivo versionado, expone más que antes. → **R-11** |
+| **D** | Una corrida de tests compite por recursos con lo que use esa instancia. En una máquina de desarrollo, sin impacto real. |
+| **E** | Crear y borrar bases exige una cuenta de mayor privilegio que la de la aplicación. Ese privilegio ahora vive en una cadena que los tests leen del entorno. → **R-11** |
 
 ---
 
@@ -280,15 +289,41 @@ deshabilitando un botón. Un cliente manipulado o un evento fuera de orden esqui
 resultado en lugar de reimplementar la comparación. Regla de `security.instructions.md`: la
 validación del lado servidor es obligatoria.
 
-### 🟢 R-11 — LOW · Socket de Docker expuesto por Testcontainers
+### 🟠 R-11 — HIGH · Los tests corren contra la instancia que aloja los datos reales
 
-**STRIDE:** Elevation of Privilege · **Probabilidad:** Baja · **Impacto:** Medium
+**STRIDE:** Tampering + Spoofing + Information Disclosure + Elevation of Privilege
+**Probabilidad:** Media · **Impacto:** High
 
-Testcontainers necesita hablar con el daemon de Docker, cuyo socket equivale a root en la máquina.
+> **Riesgo reemplazado el 2026-08-02.** Antes decía "socket de Docker expuesto por Testcontainers",
+> severidad LOW. Al quitar Docker desaparece aquel riesgo — y aparece este, que es más grave. Vale
+> la pena dejarlo escrito así, y no borrar el anterior en silencio: **la decisión de no depender de
+> Docker no eliminó un riesgo, lo cambió por otro mayor.**
 
-**Mitigación:** es dependencia exclusiva de desarrollo y test. Debe referenciarse solo desde
-`GestionVacaciones.Tests`, nunca desde `Web` ni `Data`, para que no pueda llegar a un artefacto de
-publicación.
+Con Testcontainers, el aislamiento era una propiedad de la infraestructura: el contenedor nacía
+vacío, moría al terminar y no compartía nada con ninguna base real. Ahora los tests escriben en la
+**misma instancia** que aloja `GestionVacacionesV2` y `GestionVacaciones` (la v1, que `AGENTS.md`
+marca como cicatriz). Tres consecuencias concretas:
+
+1. **Un test destructivo apuntado al catálogo equivocado destruye datos reales.** Basta una variable
+   de entorno mal puesta o un `appsettings` copiado.
+2. **La cuenta de test necesita crear y borrar bases**, o sea más privilegio que la de la
+   aplicación, y esa credencial vive en una variable de entorno de la máquina de desarrollo.
+3. **La cadena de test lleva credenciales de una instancia con datos reales**, no de una caja
+   desechable: filtrarla cuesta más que antes.
+
+**Mitigaciones — entran en la spec:**
+
+1. **Guardarraíl estructural del sufijo `_Test`.** El fixture aborta **antes de abrir la conexión**
+   si el `Initial Catalog` no termina en `_Test`. Es el control que devuelve por código el
+   aislamiento que antes daba el contenedor. Fijado por B2-T10.
+2. **Denylist explícita de los dos catálogos intocables**, `GestionVacacionesV2` y
+   `GestionVacaciones`, nombrados uno por uno y no solo cubiertos por la regla del sufijo. Fijado
+   por B2-T11.
+3. **La cadena de test nunca se versiona:** se lee de `VACACIONES_CONNECTION_TEST` o de user-secrets
+   del proyecto de tests. El guardarraíl de secretos de B1-T6 ya cubre los `appsettings*.json`.
+4. **El mensaje de error del fixture nombra el catálogo destino, nunca la cadena.** Fijado por
+   B2-T13, que espeja lo que B1-T4 hace para la cadena de la aplicación.
+5. **Cada test crea sus propios datos y los limpia** (regla #0 de `testing.instructions.md`).
 
 ### 🟢 R-12 — LOW · PII en los registros de log
 
@@ -300,12 +335,17 @@ Loguear el empleado actual para depurar escribe nombre y correo en los logs (F-S
 
 ### Cadena de suministro (W-TM-01)
 
-Siete dependencias nuevas: MudBlazor, `Microsoft.EntityFrameworkCore.SqlServer`,
-`Microsoft.EntityFrameworkCore.Design`, el conjunto de xUnit, bUnit, `coverlet.collector` y
-Testcontainers. Las cuatro últimas son exclusivas del proyecto de tests.
-`Microsoft.EntityFrameworkCore.Design` se referencia con `PrivateAssets="all"` para que no fluya al
-publicado. La spec debe fijar versiones exactas: `AGENTS.md` prohíbe mezclar versiones y
-`TreatWarningsAsErrors` convierte cualquier advertencia de compatibilidad en un build roto.
+Ocho dependencias nuevas: MudBlazor, `Microsoft.EntityFrameworkCore.SqlServer`,
+`Microsoft.EntityFrameworkCore.Design`, el conjunto de xUnit, bUnit y `coverlet.collector`. Las tres
+últimas son exclusivas del proyecto de tests. `Microsoft.EntityFrameworkCore.Design` se referencia
+con `PrivateAssets="all"` para que no fluya al publicado. La spec fija versiones exactas: `AGENTS.md`
+prohíbe mezclar versiones y `TreatWarningsAsErrors` convierte cualquier advertencia de compatibilidad
+en un build roto.
+
+**Cambio del 2026-08-02:** al retirar `Testcontainers.MsSql` desaparece también su grafo transitivo
+—`Docker.DotNet`, `BouncyCastle`, `SharpZipLib`—, lo que **reduce** la superficie de cadena de
+suministro. Es el único aspecto en que el cambio de infraestructura de tests mejora la postura de
+seguridad; en aislamiento la empeora (R-11).
 
 ---
 
@@ -328,7 +368,9 @@ publicado. La spec debe fijar versiones exactas: `AGENTS.md` prohíbe mezclar ve
 11. Documentar que el usuario de base de la aplicación no lleva `db_owner`.
 12. Prohibición explícita de `MarkupString` con entrada de usuario y de SQL crudo concatenado.
 13. La validación de fechas vive en el servicio; el formulario consume su resultado.
-14. Testcontainers referenciado únicamente desde el proyecto de tests.
+14. Guardarraíl del sufijo `_Test` en el fixture de integración, más denylist explícita de
+    `GestionVacacionesV2` y `GestionVacaciones`; la cadena de test desde entorno o user-secrets, y su
+    mensaje de error sin la cadena (R-11).
 15. Los logs registran `EmpleadoId`, nunca nombre ni correo.
 16. Versiones exactas de las siete dependencias; `EFCore.Design` con `PrivateAssets="all"`.
 
@@ -339,9 +381,9 @@ publicado. La spec debe fijar versiones exactas: `AGENTS.md` prohíbe mezclar ve
 | Severidad | Cantidad | Estado |
 |---|---|---|
 | 🔴 Critical | 1 | Mitigado en el diseño (R-01) |
-| 🟠 High | 5 | 3 mitigados (R-02, R-03, R-04), 1 mitigado parcialmente (R-06), 1 riesgo aceptado (R-05) |
+| 🟠 High | 6 | 4 mitigados (R-02, R-03, R-04, **R-11**), 1 mitigado parcialmente (R-06), 1 riesgo aceptado (R-05) |
 | 🟡 Medium | 4 | 3 mitigados (R-07, R-08, R-10), 1 riesgo aceptado (R-09) |
-| 🟢 Low | 2 | Mitigados (R-11, R-12) |
+| 🟢 Low | 1 | Mitigado (R-12) |
 
 **Los dos riesgos aceptados (R-05 y R-09) fueron confirmados explícitamente por el usuario el
 2026-08-01**, con los tres campos que exige F-TM-04: quién acepta, justificación y condiciones de

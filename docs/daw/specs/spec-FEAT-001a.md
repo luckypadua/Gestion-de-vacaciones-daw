@@ -7,7 +7,7 @@
 | Threat model | `docs/daw/security/threat-FEAT-001a.md` |
 | Tier | FEATURE |
 | Date | 2026-08-01 |
-| Spec loops | 1 |
+| Spec loops | 2 |
 
 ## Summary
 
@@ -20,10 +20,10 @@ fallar el arranque. Encima, tres servicios de dominio (`CalculadorDeDiasCorridos
 `SolicitudesService`, `PermisosService`) implementan el alta con validación de fechas y el listado
 propio, y cuatro componentes MudBlazor los consumen sin tocar nunca el `DbContext`.
 
-Las invariantes del período se refuerzan con tres check constraints en la base, verificadas contra un
-SQL Server 2022 real levantado con Testcontainers: es la única forma de probar lo que NFR-04 exige,
-porque el proveedor InMemory ignora los check constraints y haría pasar en verde un test que afirma
-lo contrario.
+Las invariantes del período y del estado se refuerzan con cuatro check constraints en la base,
+verificadas contra un SQL Server 2022 **real** —la instancia del entorno de desarrollo, sobre una
+base descartable con sufijo `_Test`— porque el proveedor InMemory ignora los check constraints y
+haría pasar en verde un test que afirma lo contrario de lo que NFR-04 exige.
 
 ## Coverage: PRD → blocks
 
@@ -37,7 +37,7 @@ lo contrario.
 | NFR-01 (p95 < 3 s, 50 concurrentes) | **Estrategia:** `IDbContextFactory` por operación evita el `DbContext` compartido que serializa el circuito, y el índice `(EmpleadoId, FechaCreacion)` del Block 2 evita el escaneo completo en el listado. La verificación de carga con 50 usuarios concurrentes **se difiere a un ticket de performance propio**: este ticket no despliega nada y no hay entorno donde medirla. Declarado explícitamente, no omitido. |
 | NFR-02 (cobertura ≥ 80%) | **Estrategia:** `coverlet.collector` 10.0.1 referenciado desde el proyecto de tests + `dotnet test --collect:"XPlat Code Coverage"`. Sin ese paquete `dotnet test` no emite ningún número y F-VER-03 llega a VERIFY sin nada que medir. |
 | NFR-03 (2 últimas versiones de Chrome, Edge y Firefox) | **Estrategia:** bUnit renderiza en memoria y **no abre un navegador**, así que no aporta evidencia aquí. Se declara **verificación manual** sobre los tres navegadores al cerrar el ticket. Automatizarlo exigiría Playwright, desproporcionado para este alcance. |
-| NFR-04 (0 filas persistibles inválidas) | Block 2: **cuatro** check constraints (tres sobre el período, una sobre el estado), verificadas con Testcontainers contra `mssql/server:2022` |
+| NFR-04 (0 filas persistibles inválidas) | Block 2: **cuatro** check constraints (tres sobre el período, una sobre el estado), verificadas contra la **instancia SQL Server 2022 del entorno de desarrollo**, sobre una base descartable, con los tests marcados como categoría de integración |
 | NFR-05 (`IDbContextFactory` al 100%, 0 `AddDbContext`) | Block 2 + test de composición del contenedor |
 | NFR-06 (1 sola interfaz de identidad) | Block 4 + test de composición del contenedor |
 | NFR-07 (0 advertencias) | Block 1, `TreatWarningsAsErrors` en el `Directory.Build.props` de la **raíz** |
@@ -75,7 +75,34 @@ Cadena lineal estricta: **1 → 2 → 3 → 4 → 5 → 6**.
   esquema. **Sin `db_owner` ni `sa`.** Las migraciones se aplican con una cuenta distinta y de mayor
   privilegio (mitigación R-07).
 
-## Dependencias nuevas — 9 paquetes, versiones exactas
+### Infraestructura de tests de integración
+
+Los tests que verifican NFR-04 necesitan un motor SQL Server real: el proveedor InMemory **ignora
+por completo los check constraints**, así que un test escrito contra él pasaría en verde afirmando
+lo contrario de lo que NFR-04 exige. Corren contra la instancia del entorno de desarrollo, bajo las
+reglas siguientes.
+
+- **Base de datos de test: `GestionVacacionesV2_Test`**, creada por el fixture aplicando las
+  migraciones. **Nunca** `GestionVacacionesV2` (la de la aplicación) ni `GestionVacaciones` (la v1,
+  que `AGENTS.md` marca como cicatriz).
+- **Guardarraíl estructural:** el fixture **aborta con excepción** si el `Initial Catalog` de la
+  cadena de test no termina en `_Test`. Es el mismo patrón que `SeedDatos` aplica contra R-03, y
+  hace **imposible** —no improbable— que un test destructivo alcance datos reales. Sin él, la regla
+  #0 de `testing.instructions.md` dependería de la disciplina de quien escribe cada test; con él,
+  depende del código.
+- **La cadena de test se lee de la variable de entorno `VACACIONES_CONNECTION_TEST` o de
+  user-secrets del proyecto de tests.** Nunca hardcodeada: desde WSL la instancia se alcanza por la
+  IP del host de Windows, que **cambia entre reinicios** — `AGENTS.md` lo documenta como cicatriz.
+- **Categoría de integración:** los tests que tocan la base llevan `Trait` de categoría. Si no hay
+  cadena configurada, **se saltean con motivo explícito**, no fallan. Una suite roja por falta de
+  entorno enseña a ignorar el rojo, que es peor que no tener el test.
+- **Cada test crea sus propios datos y los limpia** (regla #0).
+
+> **Limitación conocida, declarada y no omitida:** NFR-04 queda verificado **solo donde hay motor**.
+> En una máquina sin acceso a la instancia, esos tests se saltean y la invariante no tiene evidencia.
+> Cuando exista CI, no correrán ahí hasta que ese entorno tenga SQL Server disponible.
+
+## Dependencias nuevas — 8 paquetes, versiones exactas
 
 `AGENTS.md` prohíbe mezclar versiones y `TreatWarningsAsErrors` convierte cualquier advertencia de
 compatibilidad en un build roto, así que se fijan exactas y verificadas contra NuGet.
@@ -90,7 +117,13 @@ compatibilidad en un build roto, así que se fijan exactas y verificadas contra 
 | `xunit.runner.visualstudio` | 3.1.5 | Tests | Descubrimiento de tests. |
 | `bunit` | 2.8.6 | Tests | Único camino para AC-01, AC-05 y AC-07 a nivel componente. **Verificado: declara `net10.0` explícitamente.** |
 | `coverlet.collector` | 10.0.1 | Tests | Sin él no hay número de cobertura para NFR-02 ni F-VER-03. |
-| `Testcontainers.MsSql` | 4.13.0 | **Solo Tests** | Único modo de verificar NFR-04 contra el motor real. Referenciado solo desde Tests para que no llegue a un artefacto de publicación (mitigación R-11). |
+> **`Testcontainers.MsSql` se retiró en el `Spec loops 2`.** Estaba justificado como el único modo
+> de verificar NFR-04 contra el motor real, pero el usuario decidió no depender de Docker y los
+> tests pasan a la instancia SQL Server 2022 del entorno de desarrollo (ver "Infraestructura de
+> tests de integración"). Con él desaparece además su grafo transitivo —`Docker.DotNet`,
+> `BouncyCastle`, `SharpZipLib`— lo que **reduce** la superficie de cadena de suministro (W-TM-01) y
+> elimina el riesgo R-11 del modelo de amenazas, que era el acceso al socket de Docker.
+> El Bloque 1 se implementó y commiteó **con** esa referencia (`506383e`); el Bloque 2 la elimina.
 
 **Acción previa obligatoria:** el `dotnet-ef` global instalado es **10.0.9** y los paquetes quedan en
 **10.0.10**. Actualizar con `dotnet tool update --global dotnet-ef` antes del Block 2.
@@ -122,8 +155,13 @@ compatibilidad en un build roto, así que se fijan exactas y verificadas contra 
 - `src/GestionVacaciones.Web/Configuracion/CadenaDeConexion.cs` (nuevo) — resuelve la cadena con
   precedencia
 - `tests/GestionVacaciones.Tests/GestionVacaciones.Tests.csproj` (nuevo) — `ProjectReference` → Web
-  y → Data; xUnit, bUnit, coverlet, Testcontainers
+  y → Data; xUnit, bUnit, coverlet
 - `.gitignore` (modificado) — **solo append**
+
+> **Nota del `Spec loops 2`.** Este bloque ya está implementado y commiteado (`506383e`), y su
+> `.csproj` incluye `Testcontainers.MsSql`, que era lo que la spec pedía entonces. La referencia
+> **la elimina el Bloque 2**, junto con el cambio de infraestructura de tests. No se reescribe el
+> Bloque 1 por eso: su trabajo está hecho y verificado.
 
 **Logic**
 
@@ -193,6 +231,10 @@ vacío. Una cadena malformada falla al arrancar, no en la primera consulta.
   y Design 10.0.10 con `PrivateAssets="all"`
 - `src/GestionVacaciones.Web/Program.cs` (modificado) — `AddDbContextFactory<VacacionesDbContext>`.
   **Nunca `AddDbContext`** (`AGENTS.md`, NFR-05)
+- `tests/GestionVacaciones.Tests/Persistencia/BaseDeDatosDeTest.cs` (nuevo) — fixture de integración:
+  guardarraíl del sufijo `_Test`, creación de la base aplicando migraciones, y limpieza
+- `tests/GestionVacaciones.Tests/GestionVacaciones.Tests.csproj` (modificado) — **elimina**
+  `Testcontainers.MsSql`, que el Bloque 1 había dejado referenciado
 
 **Data model**
 
@@ -249,8 +291,11 @@ de superposición, que pertenece a FEAT-001c y está fuera de alcance.
 | Violación de unicidad de `Correo` | `DbUpdateException`. Solo alcanzable desde la semilla o carga externa. |
 | `Estado` fuera del rango del enum | Rechazado por `CK_Solicitud_EstadoValido`. Alcanzable por carga externa o por un cast inválido en C#. |
 | Base inalcanzable | La excepción de conexión se propaga. No se reintenta en silencio ni se degrada a un resultado vacío, que se leería como "no tenés solicitudes". |
+| El catálogo de la cadena de test no termina en `_Test` | El fixture **aborta con excepción antes de abrir la conexión**. Nunca se ejecuta una operación destructiva contra un catálogo que no se declaró como de prueba. |
+| No hay cadena de test configurada | Los tests de integración **se saltean** con motivo explícito. No fallan: una suite roja por falta de entorno enseña a ignorar el rojo. |
+| La instancia de test es inalcanzable | La excepción de conexión se propaga con el nombre del catálogo destino, **nunca con la cadena**, que puede llevar credenciales. |
 
-**Required tests** *(Testcontainers con `mssql/server:2022`)*
+**Required tests** *(contra la instancia SQL Server 2022 del entorno, sobre `GestionVacacionesV2_Test`; ver "Infraestructura de tests de integración")*
 - [ ] **B2-T1** — sad path: insertar con `FechaFin < FechaInicio` es rechazado por
   `CK_Solicitud_PeriodoCoherente` (NFR-04).
 - [ ] **B2-T2** — sad path: insertar con `DiasCorridos = 0` es rechazado por
@@ -268,11 +313,23 @@ de superposición, que pertenece a FEAT-001c y está fuera de alcance.
   diría al empleado "no tenés solicitudes" mientras la base está caída.
 - [ ] **B2-T9** — sad path: insertar con `Estado = 99` es rechazado por `CK_Solicitud_EstadoValido`
   (NFR-04).
+- [ ] **B2-T10** — sad path del fixture: con una cadena cuyo catálogo **no termina en `_Test`**, el
+  fixture aborta **antes de abrir la conexión**.
+- [ ] **B2-T11** — sad path del fixture: con una cadena que apunta a `GestionVacacionesV2` o a
+  `GestionVacaciones` (la v1), el fixture aborta. Son los dos catálogos que `AGENTS.md` marca como
+  intocables, y este test los nombra explícitamente en vez de confiar en la regla del sufijo.
+- [ ] **B2-T12** — sin cadena de test configurada, los tests de integración **se saltean** con motivo
+  explícito y la suite queda verde, no roja.
+- [ ] **B2-T13** — sad path del fixture: con una cadena de test cuyo host no responde, la excepción
+  se propaga y el mensaje **contiene el nombre del catálogo destino pero no la cadena**. Espeja lo
+  que B1-T4 fija para la cadena de la aplicación: el diagnóstico tiene que ser accionable sin
+  publicar credenciales.
 
 **Completion criterion**
 `dotnet ef migrations add InicialV2 -p src/GestionVacaciones.Data -s src/GestionVacaciones.Web`
-genera la migración, `dotnet ef database update` la aplica sobre `GestionVacacionesV2`, y los 9 tests
-pasan contra el contenedor de SQL Server 2022.
+genera la migración, `dotnet ef database update` la aplica sobre `GestionVacacionesV2`, y los 13
+tests pasan contra la instancia SQL Server 2022 del entorno sobre `GestionVacacionesV2_Test`.
+`Testcontainers.MsSql` ya no figura en ningún `.csproj`.
 
 ---
 
@@ -533,8 +590,10 @@ entrada de usuario en el proyecto Web.
 Al terminar los 6 bloques debe cumplirse:
 
 1. `dotnet build src/GestionVacaciones.slnx` → **0 advertencias, 0 errores** (NFR-07).
-2. `dotnet test src/GestionVacaciones.slnx --collect:"XPlat Code Coverage"` → **45 tests en verde** y
-   cobertura de líneas, ramas y funciones **≥ 80%** sobre el código nuevo (NFR-02).
+2. `dotnet test src/GestionVacaciones.slnx --collect:"XPlat Code Coverage"` → **al menos 49 tests en
+   verde** y cobertura de líneas, ramas y funciones **≥ 80%** sobre el código nuevo (NFR-02). El
+   número es un piso, no una meta: el Bloque 1 cerró con 27 en vez de los 6 previstos, porque las
+   revisiones exigieron fijar por test lo que el código ya hacía.
 3. Los 7 AC del PRD tienen al menos un test que los valida y pasa.
 4. Con `ASPNETCORE_ENVIRONMENT=Production` la aplicación **no arranca** con el proveedor de
    desarrollo (R-01).
@@ -542,6 +601,10 @@ Al terminar los 6 bloques debe cumplirse:
 6. Las **cuatro** check constraints existen y rechazan filas inválidas contra SQL Server 2022 real
    (NFR-04): las tres del período y `CK_Solicitud_EstadoValido`, que rechaza un `Estado` fuera del
    rango del enum.
+6b. **Ningún test de integración puede ejecutarse contra un catálogo que no termine en `_Test`.** El
+   guardarraíl del fixture aborta antes de abrir la conexión, y B2-T10 y B2-T11 lo fijan. Es la
+   condición que hace que la regla #0 de testing no dependa de la disciplina de quien escriba el
+   próximo test.
 7. `AGENTS.md` queda actualizado con las carpetas nuevas (`Data/Entidades/`, `Data/Services/`,
    `Web/Identidad/`, `Web/Configuracion/`, `Web/Components/Solicitudes/`, `Web/Components/Identidad/`
    y las subcarpetas de tests) y las 9 dependencias. **Es tarea del Block 6**, y `AGENTS.md:107` lo
@@ -561,3 +624,10 @@ Al terminar los 6 bloques debe cumplirse:
 - **NFR-01 sin verificación de carga.** Diferido a un ticket de performance, como se declara en la
   tabla de cobertura.
 - **NFR-03 por verificación manual.** bUnit no abre navegadores.
+- **NFR-04 verificado solo donde hay motor.** Al pasar de Testcontainers a la instancia del entorno
+  de desarrollo (`Spec loops 2`), la evidencia de las cuatro check constraints existe únicamente en
+  máquinas con acceso a ese SQL Server. En cualquier otra, esos tests se saltean y la invariante
+  queda sin verificar. El CI futuro necesitará SQL Server disponible, o volver a contenedores.
+- **La IP del host de Windows cambia entre reinicios.** La cadena de test se toma de
+  `VACACIONES_CONNECTION_TEST` o de user-secrets precisamente por eso; si los tests de integración
+  empiezan a saltearse sin explicación, esa es la primera causa a revisar.
