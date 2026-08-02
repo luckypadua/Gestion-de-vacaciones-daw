@@ -1,5 +1,8 @@
+using GestionVacaciones.Data;
 using GestionVacaciones.Web.Components;
 using GestionVacaciones.Web.Configuracion;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using MudBlazor.Services;
 
 namespace GestionVacaciones.Web;
@@ -54,6 +57,25 @@ public static class Program
 
         var cadenaDeConexion = CadenaDeConexion.Resolver(constructor.Configuration, esDesarrollo);
         constructor.Services.AddSingleton(new CadenaDeConexionResuelta(cadenaDeConexion));
+
+        // AddDbContextFactory y NUNCA AddDbContext (NFR-05). Un DbContext scoped vive todo el
+        // circuito Blazor Server, y dos componentes que consultan a la vez lo comparten hasta que EF
+        // lanza «A second operation was started on this context instance». Con la fábrica, cada
+        // operación abre y cierra el suyo. AGENTS.md lo registra como cicatriz del proyecto.
+        constructor.Services.AddDbContextFactory<VacacionesDbContext>(
+            opciones => opciones.UseSqlServer(cadenaDeConexion));
+
+        // AddDbContextFactory agrega POR SU CUENTA un descriptor scoped de VacacionesDbContext que
+        // delega en la fábrica, como comodidad para quien prefiera inyectar el contexto. Se retira:
+        // scoped en Blazor Server es «uno por circuito», así que un componente que inyectara el
+        // contexto obtendría el mismo de siempre y volvería a caer en «A second operation was started
+        // on this context instance» —justo lo que NFR-05 quiere impedir— sin escribir en ningún lado
+        // la palabra AddDbContext. Sin el descriptor, un componente con «@inject VacacionesDbContext»
+        // revienta al activarse, en su primer render: NO al arrancar —ValidateOnBuild solo alcanza a
+        // los servicios registrados, y los componentes Blazor no lo son—, pero sí el 100% de las
+        // veces y en la primera prueba manual, en vez de una vez cada tantas bajo concurrencia.
+        // Fallar siempre es lo que lo vuelve un guardarraíl; fallar a veces es una trampa.
+        constructor.Services.RemoveAll<VacacionesDbContext>();
 
         constructor.Services
             .AddRazorComponents()

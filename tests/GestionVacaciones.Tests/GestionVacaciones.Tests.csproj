@@ -6,6 +6,9 @@
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- La cadena de los tests de integración vive en user-secrets, fuera del repositorio,
+         porque el repo es público (R-02). Clave: ConnectionStrings:VacacionesTest -->
+    <UserSecretsId>gestion-vacaciones-v2-tests</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,8 +18,6 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
-    <!-- Solo aquí: el socket de Docker no puede llegar a un artefacto de publicación (R-11). -->
-    <PackageReference Include="Testcontainers.MsSql" Version="4.13.0" />
     <PackageReference Include="xunit.v3" Version="3.2.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
       <PrivateAssets>all</PrivateAssets>

@@ -10,6 +10,21 @@
 
   <ItemGroup>
     <PackageReference Include="MudBlazor" Version="9.7.0" />
+    <!--
+      Las herramientas de `dotnet ef` exigen que el paquete esté referenciado en el proyecto de
+      ARRANQUE, no solo donde vive el contexto: sin esto,
+      `dotnet ef migrations add … -s src/GestionVacaciones.Web` aborta con «Your startup project
+      doesn't reference Microsoft.EntityFrameworkCore.Design». En Data la referencia lleva
+      PrivateAssets=all, así que no llega hasta acá por vía transitiva.
+
+      Acá se restringe además IncludeAssets para que Web NO pueda compilar contra los tipos de
+      tiempo de diseño: el paquete entra como herramienta de build y nada más. Con PrivateAssets=all
+      tampoco fluye al artefacto publicado.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
