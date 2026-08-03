@@ -36,11 +36,12 @@ public static class Program
     /// </summary>
     private static readonly TimeSpan _retencionDeCircuitosDesconectados = TimeSpan.FromMinutes(2);
 
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         var aplicacion = ConstruirAplicacion(args);
         ConfigurarCanalizacion(aplicacion);
-        aplicacion.Run();
+        await SembrarSiCorrespondeAsync(aplicacion).ConfigureAwait(false);
+        await aplicacion.RunAsync().ConfigureAwait(false);
     }
 
     /// <summary>Construye el host y su contenedor de servicios.</summary>
@@ -92,6 +93,46 @@ public static class Program
         constructor.Services.AddMudServices();
 
         return constructor.Build();
+    }
+
+    /// <summary>
+    /// Siembra la nómina de desarrollo, <b>solo</b> en <c>Development</c>. Devuelve <c>null</c> cuando
+    /// no corresponde sembrar, para que «no se invocó» sea distinguible de «se invocó y abortó».
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// La condición del entorno vive acá y no dentro de <see cref="SeedDatos"/>: la semilla decide
+    /// sobre qué base puede escribir (R-03), y el host decide si corresponde escribir. Fuera de
+    /// <c>Development</c> ni siquiera se resuelve la fábrica: cuatro empleados sin credencial son
+    /// identidades utilizables por el selector, y R-01 es exactamente el escenario de arrancar en
+    /// producción con la variable de entorno mal puesta.
+    /// </para>
+    /// <para>
+    /// El conjunto declarado es <see cref="CatalogosSembrables.DeLaAplicacion"/> —solo
+    /// <c>GestionVacacionesV2</c>—: es el único lugar del código que otorga ese permiso, y lo nombra.
+    /// </para>
+    /// <para>
+    /// Si la escritura falla, la excepción <b>se propaga</b> y la aplicación no arranca. Es
+    /// deliberado: una semilla a medias, o una base inalcanzable en desarrollo, son problemas que
+    /// conviene ver al arrancar y no tres pantallas después. El aborto por catálogo, en cambio, no
+    /// lanza: registra el aviso y la aplicación sigue.
+    /// </para>
+    /// </remarks>
+    public static async Task<ResultadoDeSemilla?> SembrarSiCorrespondeAsync(WebApplication aplicacion)
+    {
+        ArgumentNullException.ThrowIfNull(aplicacion);
+
+        if (!aplicacion.Environment.IsDevelopment())
+        {
+            return null;
+        }
+
+        var semilla = new SeedDatos(
+            aplicacion.Services.GetRequiredService<IDbContextFactory<VacacionesDbContext>>(),
+            CatalogosSembrables.DeLaAplicacion,
+            aplicacion.Services.GetRequiredService<ILogger<SeedDatos>>());
+
+        return await semilla.SembrarAsync().ConfigureAwait(false);
     }
 
     /// <summary>Configura la canalización HTTP.</summary>
