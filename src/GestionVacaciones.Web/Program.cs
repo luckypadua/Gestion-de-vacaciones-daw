@@ -113,6 +113,7 @@ public static class Program
         constructor.Services.AddMudServices();
 
         RegistrarIdentidad(constructor, esDesarrollo);
+        RegistrarDominio(constructor.Services);
 
         ajustarServicios?.Invoke(constructor.Services);
 
@@ -183,6 +184,42 @@ public static class Program
         }
 
         constructor.Services.AddScoped<IEmpleadoActualProvider, EmpleadoActualNoConfigurado>();
+    }
+
+    /// <summary>
+    /// Registra las reglas de dominio del alta y del listado, y la fuente de tiempo de la que salen.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Sin condicionar al entorno, a diferencia de la identidad.</b> El alta y el listado son
+    /// funcionalidad del producto, no andamiaje de desarrollo: tienen que existir en cualquier entorno. Lo
+    /// que decide si hay a nombre de quién crear una solicitud es la identidad, que sí está condicionada
+    /// (R-01), y fuera de <c>Development</c> niega. Duplicar acá esa condición pondría la decisión de R-01
+    /// en dos lugares.
+    /// </para>
+    /// <para>
+    /// <b>Scoped, igual que la identidad.</b> En Blazor Server el ámbito es el circuito, y
+    /// <see cref="SolicitudesService"/> depende del proveedor de identidad: como singleton capturaría el
+    /// del primer circuito que lo resolviera y crearía las solicitudes de todo el mundo a nombre de ese
+    /// empleado —AC-07 roto sin excepción y sin síntoma—. <see cref="PermisosService"/> no tiene estado y
+    /// podría ser singleton; se registra con el mismo tiempo de vida para que el día que su regla necesite
+    /// el organigrama no haya que revisar de nuevo esta decisión.
+    /// </para>
+    /// <para>
+    /// <b>Por qué el <see cref="TimeProvider"/> se registra igual, si el host de ASP.NET Core ya lo
+    /// hace.</b> Porque lo hace <i>el host</i>: es un valor por defecto de la plantilla web, no una
+    /// dependencia declarada por esta aplicación. Con <c>TryAdd</c>, esta línea no duplica el descriptor
+    /// —queda uno solo, el que ya estaba— y deja escrito que el dominio necesita una fuente de tiempo
+    /// inyectada; un host futuro que no traiga esa comodidad —un worker, un job por lotes— la compone sin
+    /// que nada falle en tiempo de ejecución al primer uso.
+    /// </para>
+    /// </remarks>
+    private static void RegistrarDominio(IServiceCollection servicios)
+    {
+        servicios.TryAddSingleton(TimeProvider.System);
+
+        servicios.AddScoped<PermisosService>();
+        servicios.AddScoped<SolicitudesService>();
     }
 
     /// <summary>
