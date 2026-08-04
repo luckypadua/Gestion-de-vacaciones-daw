@@ -262,31 +262,61 @@ public static class Program
         return await semilla.SembrarAsync().ConfigureAwait(false);
     }
 
-    /// <summary>Configura la canalización HTTP.</summary>
+    /// <summary>Configura la canalización HTTP y publica los endpoints de los componentes.</summary>
     public static WebApplication ConfigurarCanalizacion(WebApplication aplicacion)
     {
         ArgumentNullException.ThrowIfNull(aplicacion);
 
-        if (!aplicacion.Environment.IsDevelopment())
+        ConfigurarMiddleware(aplicacion, aplicacion.Environment);
+
+        aplicacion.MapRazorComponents<App>().AddInteractiveServerRenderMode();
+
+        return aplicacion;
+    }
+
+    /// <summary>
+    /// Los middleware que atienden <b>antes</b> de llegar a los componentes: el manejador de
+    /// excepciones y HSTS fuera de <c>Development</c>, y la redirección a HTTPS, los archivos estáticos
+    /// y la validación antiforgery en todos los entornos.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Por qué está separado de <see cref="ConfigurarCanalizacion"/>.</b> Para poder verificarlo. Lo
+    /// que hay acá es la mitigación 3 de R-01 (CRITICAL) —fuera de <c>Development</c>, ninguna página
+    /// de excepciones del desarrollador— y F-SAST-12, y estaba sin un solo test: borrar
+    /// <c>UseAntiforgery()</c> o <c>UseHsts()</c> dejaba la suite entera en verde. Un test no puede
+    /// armar la canalización completa sin levantar el servidor, porque termina en los componentes
+    /// Razor, que necesitan un circuito; recibiendo un <see cref="IApplicationBuilder"/> cualquiera, en
+    /// cambio, el test arma <b>estos mismos</b> middleware sobre el contenedor real, le engancha un
+    /// terminal propio y observa qué le pasa a una petición.
+    /// </para>
+    /// <para>
+    /// <b>No cambia lo que hace la aplicación:</b> es el mismo cuerpo, en el mismo orden, invocado
+    /// desde el mismo lugar. El entorno llega por parámetro y no se lee de <c>aplicacion.Environment</c>
+    /// para que el test pueda ejercitar las dos ramas sin construir dos hosts distintos por caso.
+    /// </para>
+    /// </remarks>
+    public static void ConfigurarMiddleware(IApplicationBuilder canalizacion, IHostEnvironment entorno)
+    {
+        ArgumentNullException.ThrowIfNull(canalizacion);
+        ArgumentNullException.ThrowIfNull(entorno);
+
+        if (!entorno.IsDevelopment())
         {
             // Sin página de excepciones del desarrollador: la respuesta no lleva traza ni
             // configuración, solo un mensaje genérico (F-SAST-09).
-            aplicacion.UseExceptionHandler(manejador => manejador.Run(async contexto =>
+            canalizacion.UseExceptionHandler(manejador => manejador.Run(async contexto =>
             {
                 contexto.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 contexto.Response.ContentType = "text/plain; charset=utf-8";
                 await contexto.Response.WriteAsync("Se produjo un error inesperado.").ConfigureAwait(false);
             }));
 
-            aplicacion.UseHsts();
+            canalizacion.UseHsts();
         }
 
-        aplicacion.UseHttpsRedirection();
-        aplicacion.UseStaticFiles();
-        aplicacion.UseAntiforgery();
-
-        aplicacion.MapRazorComponents<App>().AddInteractiveServerRenderMode();
-
-        return aplicacion;
+        canalizacion.UseHttpsRedirection();
+        canalizacion.UseStaticFiles();
+        canalizacion.UseAntiforgery();
     }
 }

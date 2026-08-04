@@ -8,7 +8,7 @@
 | Modelo de amenazas | `docs/daw/security/threat-FEAT-001a.md` |
 | Catálogo de reglas | `.daw/rules/validation-rules.instructions.md` §4 |
 | Fecha | 2026-08-04 |
-| Intentos | 2 (el primero quedó BLOCKED por un hallazgo alto) |
+| Ejecuciones | 3 · cierre de CODE (BLOCKED → PASSED) + reejecución tras el bucle correctivo de VERIFY |
 | Resultado | **PASSED** |
 
 ## Alcance
@@ -185,6 +185,54 @@ fecha de revisión.
 | Validación en servidor (F-SAST-14, R-10) | `SolicitudesService.CrearAsync` valida las dos fechas antes de persistir; `EmpleadosService.ExisteEnLaNominaAsync` rechaza `Id <= 0` sin consultar y verifica existencia. `PuedeEnviarse` del formulario comprueba «están las dos fechas», nunca «el período es válido» |
 | Errores sin internals (F-SAST-15) | `UseExceptionHandler` escribe un literal fijo, `500`, `text/plain`. `DetailedErrors = esDesarrollo`. Los tres `catch` de la UI renderizan constantes genéricas y nunca `excepcion.Message` |
 | Dependencias (F-SAST-13/16) | `dotnet list package --vulnerable --include-transitive`: 0 paquetes vulnerables en los tres proyectos |
+
+---
+
+---
+
+## Reejecución tras el bucle correctivo de VERIFY — 2026-08-04
+
+La verificación de módulo dio BLOCKED por **F-VER-04** (`ConfigurarCanalizacion` sin ningún test) y
+el ticket volvió a CODE, lo que borró los gates `tests` y `sast`. Este es el resultado de volver a
+ganar el de seguridad.
+
+**Delta evaluado:** extracción del método `ConfigurarMiddleware(IApplicationBuilder, IHostEnvironment)`
+en `src/GestionVacaciones.Web/Program.cs` y el archivo nuevo
+`tests/GestionVacaciones.Tests/Andamiaje/CanalizacionHttpTests.cs`. **Ningún `.csproj` tocado**: no hay
+dependencias nuevas, y por lo tanto tampoco superficie nueva de cadena de suministro.
+
+| Comprobación | Resultado |
+|---|---|
+| F-SAST-01 — secretos en lo versionado, incluido el archivo nuevo | 0 valores fuera de los centinelas ficticios |
+| El delta desactiva algún control (F-SAST-09/12) | No. `DetailedErrors` sigue atado a `IsDevelopment()`; ningún `TrustServerCertificate=True`, `UseDeveloperExceptionPage` ni `AllowAnonymous` |
+| Inyección, XSS, criptografía, comandos en el delta | 0 apariciones |
+| F-SAST-13/16 — CVEs | 3 de 3 proyectos sin paquetes vulnerables |
+| El método extraído conserva orden y condiciones | Verificado línea por línea: mismo cuerpo, misma guarda `if (!entorno.IsDevelopment())`, mismo orden `UseHttpsRedirection` → `UseStaticFiles` → `UseAntiforgery` |
+
+**Las conclusiones del informe previo siguen en pie**, y dos categorías quedan **más fuertes que
+antes**, porque pasan de sostenerse por inspección a estar fijadas por comportamiento:
+
+- **F-SAST-09** — la mitad de la mitigación 3 de R-01 que vive fuera de `Development` (manejador de
+  excepciones genérico y HSTS) ahora se ejercita: una excepción no escapa y la respuesta no lleva
+  traza, con la contracara en `Development`, donde sí se propaga para que la vea quien desarrolla.
+- **F-SAST-12** — la protección CSRF deja de tener como única evidencia una línea leída a ojo.
+  Verificado por mutación: borrar `canalizacion.UseAntiforgery();` pone 2 tests en rojo.
+
+**Segundo hallazgo, encontrado por el orquestador al revisar la cobertura y no el informe.** La
+extracción de método había **movido** la costura sin testear un piso más arriba: los tests ejercitaban
+`ConfigurarMiddleware`, y nada verificaba que `ConfigurarCanalizacion` lo invocara. Borrar esa única
+línea del envoltorio dejaba la aplicación sin manejador de excepciones, sin HSTS, sin redirección
+HTTPS y sin antiforgery **con la suite entera en verde** (196/196). Es la misma consecuencia que el
+hallazgo original y estaba mejor tapada, porque ahora había ocho tests verdes que parecían cubrirla.
+Cerrado con dos tests que entran por el envoltorio; verificado por el orquestador con la mutación:
+`Failed: 2, Passed: 196`.
+
+Es el cuarto defecto de este ticket con la misma forma —el test mira la unidad y nadie mira la
+composición— y ninguno lo encontró una revisión leyendo código: los encontraron un `publish` real, la
+cobertura y una mutación.
+
+**Resultado de la reejecución: PASSED.** 0 vulnerabilidades abiertas, la supresión de F-SAST-01 sigue
+vigente y sin cambios.
 
 ---
 
