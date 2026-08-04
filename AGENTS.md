@@ -154,6 +154,14 @@ wrong once.
 - **Nunca** registrar el `DbContext` con `AddDbContext` para acceso a datos (ver el porqué en
   *Architecture conventions*).
 - **No** usar `HasData` para la data de desarrollo: las relaciones manager/designado son circulares.
+- **Nunca** declarar en `appsettings.Development.json` una clave que habilite algo. Ese archivo **viaja
+  en el artefacto publicado**, y solo se carga cuando el entorno ya es `Development`: una clave ahí no
+  es una segunda condición, es una consecuencia de la primera. Ya pasó una vez —la clave que habilita
+  el sustituto de identidad sin credencial— y convertía un `ASPNETCORE_ENVIRONMENT` mal puesto en una
+  suplantación completa. Las claves de desarrollo van en `Properties/launchSettings.json`, que está
+  versionado y **no** se publica.
+- **No** dar por independientes dos condiciones sin comprobar de dónde sale cada una. Si las dos las
+  aporta la configuración, las controla quien controla el entorno de ejecución: son una sola.
 - **Nunca** usar `MarkupString` en el proyecto Web: es la vía por la que entra HTML sin escapar. La
   prohibición es total, no «solo con entrada de usuario»: distinguir cuál es cuál exige leer el
   código, y esa lectura es la que no ocurre en la revisión apurada.

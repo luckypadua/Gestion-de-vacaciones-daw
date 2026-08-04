@@ -48,6 +48,7 @@ public sealed class SeleccionDeEmpleadoTests
         // listado como sujeto lo cierran B5-T5, B5-T7 y B6-T5, que son de bloques que todavía no
         // existen; lo que se fija acá es la propiedad de la que ambos dependen.
         _baseDeDatos.SaltearSiNoEstaDisponible();
+        HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
         await using var limpieza = new NominaDescartable(_baseDeDatos);
         await SembrarLaNominaAsync();
 
@@ -95,6 +96,7 @@ public sealed class SeleccionDeEmpleadoTests
         // solo ofrezca valores válidos es una propiedad de la interfaz, no un control. Un evento
         // fabricado a mano trae cualquier número.
         _baseDeDatos.SaltearSiNoEstaDisponible();
+        HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
         await using var limpieza = new NominaDescartable(_baseDeDatos);
         await SembrarLaNominaAsync();
 

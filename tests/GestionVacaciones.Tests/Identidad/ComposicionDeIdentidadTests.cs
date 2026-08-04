@@ -165,9 +165,11 @@ public sealed class ComposicionDeIdentidadTests
         // comparación rompe el entorno de desarrollo de TODO el mundo sin poner nada en rojo.
         //
         // «True» con T mayúscula no es una capitalización hipotética: es EXACTAMENTE la cadena que el
-        // proveedor de configuración entrega al leer el booleano JSON de appsettings.Development.json
-        // (lo fija de punta a punta el test de más abajo). «TRUE» va incluida porque es la grafía
-        // habitual de una variable de entorno.
+        // proveedor de configuración entrega al leer un booleano JSON de un appsettings. «TRUE» va
+        // incluida porque es la grafía habitual de una variable de entorno, que desde la corrección de
+        // R-01 es además la única fuente de esta clave en desarrollo (launchSettings.json).
+        HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
+
         await using var aplicacion = HostConIdentidad.Construir(HostConIdentidad.EntornoDeDesarrollo, clave);
 
         using var ambito = aplicacion.Services.CreateScope();
@@ -188,6 +190,8 @@ public sealed class ComposicionDeIdentidadTests
         // propio proveedor de configuración, mientras que recortar el espacio sería adivinar la
         // intención de una clave mal escrita. La dirección en la que conviene equivocarse es la de no
         // habilitar.
+        HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
+
         await using var conMayusculas = HostConIdentidad.Construir(HostConIdentidad.EntornoDeDesarrollo, "TRUE");
         await using var conEspacioAlFinal = HostConIdentidad.Construir(HostConIdentidad.EntornoDeDesarrollo, "TRUE ");
 
@@ -201,32 +205,36 @@ public sealed class ComposicionDeIdentidadTests
     }
 
     [Fact]
-    public async Task El_appsettings_versionado_habilita_la_identidad_de_desarrollo_de_punta_a_punta()
+    public async Task La_configuracion_versionada_por_si_sola_NO_habilita_la_identidad_de_desarrollo()
     {
-        // La cadena COMPLETA, y el único test del bloque que la recorre: archivo versionado → proveedor
-        // de configuración → doble condición → proveedor resuelto. Los demás inyectan la clave por
-        // variable de entorno y mueven la raíz de contenido a un directorio vacío, que es lo correcto
-        // para recorrer las cuatro combinaciones de R-01, pero deja sin verificar el único camino que
-        // se ejecuta de verdad todos los días.
+        // ESTE TEST ESTABA AL REVÉS, y afirmaba lo que resultó ser la vulnerabilidad. Decía «el
+        // appsettings versionado habilita la identidad de desarrollo de punta a punta», y era verdad:
+        // el archivo declaraba la clave y se copiaba al artefacto publicado, así que en un host con
+        // ASPNETCORE_ENVIRONMENT=Development mal puesta la segunda condición de R-01 llegaba sola. Las
+        // dos condiciones que el modelo de amenazas describe como independientes eran, en los hechos,
+        // una sola variable de entorno.
         //
-        // Se apunta la raíz de contenido al proyecto Web DEL REPOSITORIO, no al directorio de salida:
-        // ahí hay copias del build, y una copia no es evidencia de lo que se commiteó.
+        // Ahora la clave vive en launchSettings.json —versionado, pero NO publicado— y lo que este test
+        // afirma es lo contrario: con la configuración versionada como única fuente, el entorno de
+        // desarrollo por sí solo no alcanza. Es el escenario del artefacto desplegado.
         var archivoVersionado = Path.Combine(
             HostConIdentidad.RaizDelProyectoWeb(), "appsettings.Development.json");
 
         using var documento = JsonDocument.Parse(
             await File.ReadAllTextAsync(archivoVersionado, TestContext.Current.CancellationToken));
 
-        // El archivo declara la clave como BOOLEANO JSON, no como la cadena "true". De ahí viene todo lo
-        // demás: si algún día se escribiera como cadena, el valor entregado cambiaría y este test lo
-        // diría en vez de dejarlo pasar.
-        var declarada = documento.RootElement
-            .GetProperty(TramosDeLaClave[0])
-            .GetProperty(TramosDeLaClave[1]);
+        // El archivo ya no declara la clave. Lo fija también ClaveFueraDelArtefactoTests, desde el otro
+        // lado —la forma del artefacto—; acá se lo comprueba como premisa de lo que sigue, para que
+        // quede claro por qué el proveedor resuelto es el que niega.
+        Assert.False(
+            documento.RootElement.TryGetProperty(TramosDeLaClave[0], out var seccion)
+                && seccion.TryGetProperty(TramosDeLaClave[1], out _));
 
-        Assert.Equal(JsonValueKind.True, declarada.ValueKind);
-
-        // La clave se deja AUSENTE del entorno a propósito: la única fuente posible es el archivo.
+        // La clave se deja AUSENTE del entorno a propósito: la única fuente posible es la configuración
+        // versionada, que es exactamente lo que viaja dentro del artefacto publicado.
+        //
+        // Se apunta la raíz de contenido al proyecto Web DEL REPOSITORIO, no al directorio de salida:
+        // ahí hay copias del build, y una copia no es evidencia de lo que se commiteó.
         await using var aplicacion = HostConIdentidad.Construir(
             HostConIdentidad.EntornoDeDesarrollo,
             clave: null,
@@ -234,14 +242,12 @@ public sealed class ComposicionDeIdentidadTests
 
         var configuracion = aplicacion.Services.GetRequiredService<IConfiguration>();
 
-        // Y el proveedor de configuración entrega ese booleano como «True», con T MAYÚSCULA. Este es el
-        // hecho que obliga a comparar sin distinguir mayúsculas, y el que hasta ahora no estaba escrito
-        // en ningún lado.
-        Assert.Equal("True", configuracion[VerificacionDeIdentidad.ClaveDeConfiguracion]);
+        Assert.Null(configuracion[VerificacionDeIdentidad.ClaveDeConfiguracion]);
 
         using var ambito = aplicacion.Services.CreateScope();
 
-        Assert.IsType<EmpleadoActualDesarrollo>(
+        // Entorno de desarrollo y, aun así, el proveedor que niega: la segunda condición no está.
+        Assert.IsType<EmpleadoActualNoConfigurado>(
             ambito.ServiceProvider.GetRequiredService<IEmpleadoActualProvider>());
     }
 
@@ -256,6 +262,10 @@ public sealed class ComposicionDeIdentidadTests
         // copiara el registro sin copiar la condición. Que el forzado no alcance para saltear el
         // guardarraíl es justamente lo que este test afirma: la verificación corre después, sobre el
         // contenedor ya construido, y no sobre lo que la composición pretendía registrar.
+        // En Release lanza igual, pero por la condición de compilación y con otro mensaje: lo que este
+        // caso afirma —que el mensaje nombra el ENTORNO detectado— describe el artefacto de depuración.
+        HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
+
         var excepcion = Assert.Throws<InvalidOperationException>(() => HostConIdentidad.Construir(
             HostConIdentidad.EntornoDeProduccion,
             clave: null,
@@ -274,6 +284,8 @@ public sealed class ComposicionDeIdentidadTests
         // cumpliría también una verificación que rechazara ese proveedor SIEMPRE, con lo que la
         // aplicación no podría correr en desarrollo y el bloque entero quedaría inútil. El guardarraíl
         // está acotado al entorno, y esto lo fija.
+        HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
+
         await using var aplicacion = HostConIdentidad.Construir(
             HostConIdentidad.EntornoDeDesarrollo,
             clave: null,
@@ -288,6 +300,8 @@ public sealed class ComposicionDeIdentidadTests
     [Fact]
     public async Task B4_T5_El_proveedor_de_desarrollo_es_scoped_uno_por_circuito()
     {
+        HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
+
         await using var aplicacion = HostConIdentidad.Construir(
             HostConIdentidad.EntornoDeDesarrollo, clave: "true");
 
@@ -332,6 +346,11 @@ public sealed class ComposicionDeIdentidadTests
         // combinaciones de la doble condición se recorren juntas para que quede fijado que en TODAS
         // hay exactamente un registro: dos descriptores harían que el proveedor efectivo dependiera
         // del orden de registro, que es la clase de detalle que nadie revisa.
+        if (implementacionEsperada == typeof(EmpleadoActualDesarrollo))
+        {
+            HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
+        }
+
         IServiceCollection? coleccion = null;
 
         await using var aplicacion = HostConIdentidad.Construir(
@@ -381,6 +400,11 @@ public sealed class ComposicionDeIdentidadTests
         // Se recorren las cuatro combinaciones de la doble condición, no solo las dos «interesantes»:
         // la capacidad tiene que seguir a la MISMA condición que el registro, y las dos formas de no
         // satisfacerla —entorno equivocado, clave ausente— tienen que contestar lo mismo.
+        if (seEsperaQuePermita)
+        {
+            HostConIdentidad.SaltearSiElArtefactoNoEsDeDepuracion();
+        }
+
         await using var aplicacion = HostConIdentidad.Construir(entorno, clave);
 
         using var ambito = aplicacion.Services.CreateScope();

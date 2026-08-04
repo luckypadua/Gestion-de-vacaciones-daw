@@ -28,6 +28,23 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      El appsettings de desarrollo NO viaja en el artefacto publicado (mitigación R-01, capa 1).
+
+      Este archivo se cargaba solo en Development, así que parecía inofensivo, y sin embargo se
+      copiaba al publicado: un host productivo con ASPNETCORE_ENVIRONMENT mal puesta lo leía y de ahí
+      salía la segunda condición que habilitaba el sustituto de identidad sin credencial. Las dos
+      condiciones que el modelo de amenazas describe como independientes eran, en los hechos, una
+      sola variable de entorno.
+
+      La clave se mudó a Properties/launchSettings.json —versionado, para que un clon nuevo conserve
+      la experiencia de desarrollo, y no publicado—. Esta línea es la segunda barrera de la misma
+      capa: cubre lo que alguien agregue mañana a este archivo sin acordarse de aquella discusión.
+    -->
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\GestionVacaciones.Data\GestionVacaciones.Data.csproj" />
   </ItemGroup>
 

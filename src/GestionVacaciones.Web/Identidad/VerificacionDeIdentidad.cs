@@ -3,8 +3,8 @@ using GestionVacaciones.Data.Services;
 namespace GestionVacaciones.Web.Identidad;
 
 /// <summary>
-/// Las dos mitades de la mitigación de <b>R-01 (CRITICAL)</b>: la doble condición que habilita el
-/// sustituto de identidad de desarrollo, y la comprobación de arranque que hace que la aplicación
+/// Las dos mitades de la mitigación de <b>R-01 (CRITICAL)</b>: la <b>triple</b> condición que habilita
+/// el sustituto de identidad de desarrollo, y la comprobación de arranque que hace que la aplicación
 /// <b>no levante</b> si ese sustituto quedara activo donde no corresponde.
 /// </summary>
 /// <remarks>
@@ -17,21 +17,35 @@ namespace GestionVacaciones.Web.Identidad;
 /// </remarks>
 public static class VerificacionDeIdentidad
 {
-    /// <summary>Segunda condición de R-01, independiente del entorno.</summary>
+    /// <summary>
+    /// Segunda condición de R-01, independiente del entorno.
+    /// </summary>
+    /// <remarks>
+    /// <b>Dónde se declara importa tanto como su valor.</b> Vive en
+    /// <c>Properties/launchSettings.json</c>, que está versionado pero <b>no se publica</b>. Declararla
+    /// en <c>appsettings.Development.json</c> —que sí viaja en el artefacto— la volvía una consecuencia
+    /// del entorno en vez de una condición aparte, y con eso la mitigación se quedaba en una sola.
+    /// </remarks>
     public const string ClaveDeConfiguracion = "Vacaciones:PermitirIdentidadDeDesarrollo";
 
     /// <summary>El único valor que habilita. Todo lo demás cae del lado seguro.</summary>
     private const string ValorQueHabilita = "true";
 
     /// <summary>
-    /// ¿Corresponde registrar el sustituto de identidad de desarrollo? Solo si el entorno es
-    /// <c>Development</c> <b>y además</b> <see cref="ClaveDeConfiguracion"/> vale <c>true</c>.
+    /// ¿Corresponde registrar el sustituto de identidad de desarrollo? Solo si el artefacto se compiló
+    /// para depuración, <b>y</b> el entorno es <c>Development</c>, <b>y además</b>
+    /// <see cref="ClaveDeConfiguracion"/> vale <c>true</c>.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Las dos condiciones son independientes a propósito (mitigación 1 de R-01): un despliegue con
-    /// <c>ASPNETCORE_ENVIRONMENT=Development</c> mal puesto no alcanza para que aparezca el desplegable
-    /// de identidades, porque además haría falta la clave.
+    /// <b>Tres condiciones, y ahora sí independientes.</b> Este comentario decía antes que un despliegue
+    /// con <c>ASPNETCORE_ENVIRONMENT=Development</c> mal puesto «no alcanza, porque además haría falta la
+    /// clave», y <b>era falso</b>: la clave vivía en <c>appsettings.Development.json</c>, un archivo que
+    /// solo se carga cuando ya se cumple la condición del entorno y que además se copiaba al artefacto
+    /// publicado. La segunda condición llegaba sola detrás de la primera, así que las dos eran una.
+    /// Hoy la clave vive en <c>launchSettings.json</c>, que no se publica, y a las dos se les suma
+    /// <see cref="CompilacionDelArtefacto.EsDeDepuracion"/>, que no sale de la configuración y por lo
+    /// tanto no la puede poner quien controla el entorno de ejecución.
     /// </para>
     /// <para>
     /// La clave se compara por igualdad con «true», sin distinguir mayúsculas, y <b>no</b> se interpreta
@@ -41,11 +55,29 @@ public static class VerificacionDeIdentidad
     /// R-01. La dirección en la que conviene equivocarse es la de no habilitar.
     /// </para>
     /// </remarks>
-    public static bool PermiteIdentidadDeDesarrollo(IConfiguration configuracion, bool esDesarrollo)
+    public static bool PermiteIdentidadDeDesarrollo(IConfiguration configuracion, bool esDesarrollo) =>
+        PermiteIdentidadDeDesarrollo(configuracion, esDesarrollo, CompilacionDelArtefacto.EsDeDepuracion);
+
+    /// <summary>
+    /// Igual que <see cref="PermiteIdentidadDeDesarrollo(IConfiguration, bool)"/>, con la condición de
+    /// compilación recibida en vez de leída del ensamblado.
+    /// </summary>
+    /// <param name="compiladoParaDepuracion">
+    /// Si el artefacto se compiló para depuración. La sobrecarga existe para que un test pueda
+    /// ejercitar el comportamiento del artefacto de <c>Release</c> sin compilar en Release —la suite
+    /// corre en <c>Debug</c>, así que un <c>#if</c> crudo sería inerte y la condición quedaría sin
+    /// verificar—. <b>La composición del host nunca la llama:</b> usa la sobrecarga de dos parámetros,
+    /// que es la que lee el valor real.
+    /// </param>
+    public static bool PermiteIdentidadDeDesarrollo(
+        IConfiguration configuracion,
+        bool esDesarrollo,
+        bool compiladoParaDepuracion)
     {
         ArgumentNullException.ThrowIfNull(configuracion);
 
-        return esDesarrollo &&
+        return compiladoParaDepuracion &&
+               esDesarrollo &&
                string.Equals(configuracion[ClaveDeConfiguracion], ValorQueHabilita, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -79,10 +111,23 @@ public static class VerificacionDeIdentidad
     /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">
-    /// Si no hay ninguna implementación registrada, o si el entorno no es <c>Development</c> y la
-    /// resuelta no es <see cref="EmpleadoActualNoConfigurado"/>.
+    /// Si no hay ninguna implementación registrada, o si la resuelta no es
+    /// <see cref="EmpleadoActualNoConfigurado"/> y o bien el entorno no es <c>Development</c>, o bien el
+    /// artefacto se compiló en <c>Release</c>.
     /// </exception>
-    public static void Verificar(IServiceProvider servicios, IHostEnvironment entorno)
+    public static void Verificar(IServiceProvider servicios, IHostEnvironment entorno) =>
+        Verificar(servicios, entorno, CompilacionDelArtefacto.EsDeDepuracion);
+
+    /// <summary>
+    /// Igual que <see cref="Verificar(IServiceProvider, IHostEnvironment)"/>, con la condición de
+    /// compilación recibida en vez de leída del ensamblado.
+    /// </summary>
+    /// <param name="compiladoParaDepuracion">
+    /// Si el artefacto se compiló para depuración. Mismo motivo que en la sobrecarga equivalente de
+    /// <see cref="PermiteIdentidadDeDesarrollo(IConfiguration, bool, bool)"/>: sin ella, la condición de
+    /// compilación no sería observable desde una suite que corre en <c>Debug</c>.
+    /// </param>
+    public static void Verificar(IServiceProvider servicios, IHostEnvironment entorno, bool compiladoParaDepuracion)
     {
         ArgumentNullException.ThrowIfNull(servicios);
         ArgumentNullException.ThrowIfNull(entorno);
@@ -97,7 +142,26 @@ public static class VerificacionDeIdentidad
 
         var tipoResuelto = proveedor.GetType();
 
-        if (!entorno.IsDevelopment() && tipoResuelto != typeof(EmpleadoActualNoConfigurado))
+        if (tipoResuelto == typeof(EmpleadoActualNoConfigurado))
+        {
+            return;
+        }
+
+        // La condición de compilación se comprueba PRIMERO y por separado: es la que no depende de
+        // ninguna variable de entorno, así que es la que sigue valiendo cuando el entorno miente. Su
+        // mensaje es propio a propósito —el de abajo manda a revisar ASPNETCORE_ENVIRONMENT, y acá el
+        // entorno puede estar perfectamente bien—.
+        if (!compiladoParaDepuracion)
+        {
+            throw new InvalidOperationException(
+                $"Este artefacto se compiló en Release y la identidad del empleado actual la resuelve " +
+                $"«{tipoResuelto.Name}», que no es «{nameof(EmpleadoActualNoConfigurado)}». El sustituto " +
+                "de identidad de desarrollo permite elegir cualquier empleado sin credencial y no puede " +
+                "quedar activo en un artefacto desplegable, con ninguna variable de entorno. Si estabas " +
+                "desarrollando, compilá en Debug.");
+        }
+
+        if (!entorno.IsDevelopment())
         {
             throw new InvalidOperationException(
                 $"El entorno es «{entorno.EnvironmentName}» y la identidad del empleado actual la " +

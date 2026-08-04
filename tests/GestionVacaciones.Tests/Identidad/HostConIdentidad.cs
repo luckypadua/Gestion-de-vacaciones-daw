@@ -1,7 +1,9 @@
 using GestionVacaciones.Tests.Andamiaje;
 using GestionVacaciones.Web.Configuracion;
+using GestionVacaciones.Web.Identidad;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Xunit;
 using HostWeb = GestionVacaciones.Web.Program;
 
 namespace GestionVacaciones.Tests.Identidad;
@@ -14,11 +16,16 @@ namespace GestionVacaciones.Tests.Identidad;
 /// <remarks>
 /// <para>
 /// <b>Por qué se le cambia la raíz de contenido.</b> El directorio de salida de los tests contiene
-/// copias del <c>appsettings.json</c> y del <c>appsettings.Development.json</c> del proyecto Web, y
-/// ese último declara <c>PermitirIdentidadDeDesarrollo: true</c>. Sin mover la raíz de contenido, el
-/// caso «la clave está ausente» —que es el que fija el valor por defecto seguro— no se puede
-/// construir: la configuración del proyecto la aportaría siempre. Se apunta entonces a un directorio
-/// vacío del propio <c>bin/</c>, con lo que las dos entradas quedan exclusivamente en manos del test.
+/// copias de los <c>appsettings</c> del proyecto Web, y lo que ahí diga la configuración se sumaría a
+/// lo que el test declara. Apuntando la raíz a un directorio vacío del propio <c>bin/</c>, las dos
+/// entradas de la doble condición quedan exclusivamente en manos del test.
+/// <para>
+/// <b>Ya no es tan crítico como era.</b> Hasta la corrección de R-01, el
+/// <c>appsettings.Development.json</c> declaraba <c>PermitirIdentidadDeDesarrollo: true</c>, así que
+/// sin mover la raíz el caso «la clave está ausente» ni siquiera se podía construir. Hoy esa clave ya
+/// no está en ningún <c>appsettings</c> —vive en <c>launchSettings.json</c>, que no se publica— y
+/// mover la raíz pasa a ser aislamiento y no una necesidad. Se conserva por eso: aísla.
+/// </para>
 /// </para>
 /// <para>
 /// El aserto de que ese mecanismo funciona no es implícito: lo fija
@@ -85,6 +92,34 @@ internal static class HostConIdentidad
             [$"--contentRoot={raizDeContenido ?? RaizSinConfiguracion()}"],
             ajustarServicios);
     }
+
+    /// <summary>
+    /// Saltea el test en curso si el proyecto Web se compiló en <c>Release</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Por qué existe.</b> La capa 2 de la mitigación de R-01 impide que un artefacto de
+    /// <c>Release</c> registre el sustituto de identidad de desarrollo, con cualquier entorno y
+    /// cualquier clave. Los casos que afirman sobre el proveedor de desarrollo <i>resuelto desde el
+    /// host</i> describen entonces el comportamiento del artefacto de depuración, y bajo
+    /// <c>dotnet test -c Release</c> se quedan sin objeto: lo correcto es que no corran, no que fallen.
+    /// Una suite roja por la configuración con la que se la compiló enseña a ignorar el rojo, que es
+    /// exactamente el criterio que el fixture de integración ya aplica cuando no hay instancia
+    /// SQL Server.
+    /// </para>
+    /// <para>
+    /// <b>Esto no deja la capa 2 sin verificar en Release: la verifica mejor.</b>
+    /// <c>GuardarrailDeCompilacionTests</c> corre en las dos configuraciones, y en <c>Release</c> el
+    /// salteo de estos casos <i>es</i> la observación de que el guardarraíl funcionó de punta a punta
+    /// sobre un artefacto real.
+    /// </para>
+    /// </remarks>
+    public static void SaltearSiElArtefactoNoEsDeDepuracion() => Assert.SkipUnless(
+        CompilacionDelArtefacto.EsDeDepuracion,
+        "El proyecto Web se compiló en Release y la capa 2 de R-01 impide registrar el sustituto de " +
+        "identidad de desarrollo en un artefacto desplegable. Este caso afirma sobre el artefacto de " +
+        "depuración, así que acá no tiene objeto. La condición de compilación la verifica " +
+        "GuardarrailDeCompilacionTests, que sí corre en las dos configuraciones.");
 
     /// <summary>
     /// Directorio vacío al que se apunta la raíz de contenido por defecto, para que la clave quede
