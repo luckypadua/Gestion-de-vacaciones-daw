@@ -1,3 +1,5 @@
+using System.Reflection;
+using GestionVacaciones.Data.Entidades;
 using GestionVacaciones.Data.Services;
 using Xunit;
 
@@ -68,6 +70,113 @@ public sealed class DiagnosticoSinPiiTests
         Assert.DoesNotContain("Correo", descripcion, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("@", descripcion, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Año de las tres fechas de la solicitud de prueba —período y creación—. Ninguno de los otros
+    /// valores lo contiene como subcadena, así que buscarlo en la descripción encuentra <b>cualquiera</b>
+    /// de las tres si alguna se cuela.
+    /// </summary>
+    private const string AnioDeLasFechas = "2027";
+
+    [Fact]
+    public void El_ToString_de_SolicitudDelListado_no_lleva_el_periodo_de_las_vacaciones()
+    {
+        // El dato que protege R-12 acá no es el nombre sino el PERÍODO: cuándo no va a estar una
+        // persona identificada es un dato personal suyo, y esta proyección lo lleva junto al EmpleadoId
+        // que la identifica. El ToString() está escrito a mano para dejarlo afuera, y hasta ahora nada
+        // lo fijaba: borrar el override —o dejarlo intacto y agregarle una fecha— devolvía el dato al
+        // log sin que nada se pusiera en rojo.
+        var solicitud = new SolicitudDelListado(
+            Id: 931,
+            EmpleadoId: 4321,
+            FechaInicio: new DateOnly(2027, 3, 17),
+            FechaFin: new DateOnly(2027, 3, 29),
+            DiasCorridos: 13,
+            Estado: EstadoSolicitud.Pendiente,
+            FechaCreacion: new DateTimeOffset(2027, 1, 8, 10, 30, 0, TimeSpan.FromHours(-3)));
+
+        var descripcion = solicitud.ToString();
+
+        // El año es común a las tres fechas y no aparece en ningún otro valor: si el ToString() que
+        // genera el record volviera —imprime TODAS las propiedades—, esta línea lo encuentra.
+        Assert.DoesNotContain(AnioDeLasFechas, descripcion, StringComparison.Ordinal);
+
+        // Y los nombres de las propiedades del período, que es como el record las rotula. Cubre el caso
+        // en que las fechas se formateen de una manera que no incluya el año.
+        Assert.DoesNotContain(nameof(SolicitudDelListado.FechaInicio), descripcion, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(nameof(SolicitudDelListado.FechaFin), descripcion, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(nameof(SolicitudDelListado.FechaCreacion), descripcion, StringComparison.OrdinalIgnoreCase);
+
+        // La contracara imprescindible: sin ella, «no filtra el período» lo cumpliría también una
+        // descripción vacía, y R-12 pide reemplazar el dato personal por los identificadores, no borrar
+        // el diagnóstico.
+        Assert.Contains("931", descripcion, StringComparison.Ordinal);
+        Assert.Contains("4321", descripcion, StringComparison.Ordinal);
+        Assert.Contains(nameof(EstadoSolicitud.Pendiente), descripcion, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void El_ToString_de_un_alta_creada_no_lleva_mas_que_el_identificador()
+    {
+        // Un alta creada se describe con su identificador y nada más: el período que se acaba de
+        // registrar no tiene por qué aparecer en un log.
+        var creada = ResultadoDelAlta.Creada(931);
+
+        Assert.Equal("931", new string([.. creada.ToString().Where(char.IsDigit)]));
+    }
+
+    [Fact]
+    public void El_ToString_de_un_rechazo_no_lleva_nada_mas_que_el_literal_que_lo_motivo()
+    {
+        // La otra mitad del camino del alta: un rechazo se describe con el literal del PRD que lo
+        // motivó —un texto fijo, igual para todas las personas— y con nada más. Lo que R-12 protege acá
+        // es el período que se intentó registrar.
+        //
+        // OJO AL FORMULARLO. La versión anterior de este test afirmaba que la descripción no tenía
+        // NINGÚN dígito, razonando que el único origen posible de un dígito eran las fechas. Eso ya es
+        // falso: el PRD tiene escrito el literal de FEAT-001b —«No dispones de días suficientes. Tu
+        // saldo actual es de X días»—, que lleva un número propio y legítimo. El día que ese literal
+        // exista, aquella versión se ponía roja sin que se hubiera filtrado nada, y un test que grita
+        // por un motivo que no es el suyo es un test que se termina borrando. No lo "simplifiques" de
+        // vuelta a contar dígitos.
+        //
+        // La formulación correcta es esta: los dígitos que puede haber son EXACTAMENTE los del literal.
+        // Cualquier otro solo podría venir de un dato que este resultado no tiene por qué describir.
+        var literales = LiteralesDeRechazo();
+
+        // Sin esto, un ErroresDeSolicitud vacío o renombrado dejaría el bucle sin iteraciones y el test
+        // pasaría en verde sin haber comprobado nada.
+        Assert.NotEmpty(literales);
+
+        foreach (var literal in literales)
+        {
+            var descripcion = ResultadoDelAlta.Rechazada(literal).ToString();
+
+            // El motivo viaja entero: es lo que hace útil al diagnóstico.
+            Assert.Contains(literal, descripcion, StringComparison.Ordinal);
+
+            // Y alrededor del motivo no queda ningún dígito. Una fecha —«17/03/2027»— cae acá sí o sí,
+            // en cualquier formato que se le dé.
+            var alrededorDelLiteral = descripcion.Replace(literal, string.Empty, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(alrededorDelLiteral, character => char.IsDigit(character));
+        }
+    }
+
+    /// <summary>
+    /// Los mensajes de rechazo declarados, leídos del propio <see cref="ErroresDeSolicitud"/>.
+    /// </summary>
+    /// <remarks>
+    /// Por reflexión y no a mano: los sub-tickets siguientes agregan los suyos —el tope anual en
+    /// FEAT-001b, la superposición en FEAT-001c— y una lista escrita acá los dejaría fuera sin que
+    /// nada avisara, que es como un guardarraíl deja de cubrir justo lo que se agrega después.
+    /// </remarks>
+    private static IReadOnlyList<string> LiteralesDeRechazo() =>
+        [.. typeof(ErroresDeSolicitud)
+            .GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy)
+            .Where(campo => campo is { IsLiteral: true, IsInitOnly: false })
+            .Select(campo => campo.GetRawConstantValue())
+            .OfType<string>()];
 
     [Fact]
     public void El_ToString_de_una_identidad_sin_seleccionar_lo_dice_en_vez_de_lanzar()
