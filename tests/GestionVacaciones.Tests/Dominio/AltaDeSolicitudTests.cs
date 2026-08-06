@@ -2,6 +2,7 @@ using GestionVacaciones.Data.Entidades;
 using GestionVacaciones.Data.Services;
 using GestionVacaciones.Tests.Persistencia;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace GestionVacaciones.Tests.Dominio;
@@ -108,12 +109,16 @@ public sealed class AltaDeSolicitudTests
     }
 
     [Fact]
-    public async Task Un_periodo_de_duracion_arbitraria_se_acepta_en_este_ticket()
+    public async Task Un_periodo_de_300_dias_ahora_se_rechaza_por_el_tope()
     {
-        // El tope anual de 14 días es de FEAT-001b y la superposición de FEAT-001c: el PRD declara
-        // explícitamente que FEAT-001a acepta una solicitud de cualquier duración. Queda fijado para que
-        // nadie «arregle» de paso lo que otro sub-ticket tiene que entregar con su propio mensaje y su
-        // propio criterio de aceptación.
+        // JUBILA A Un_periodo_de_duracion_arbitraria_se_acepta_en_este_ticket, que documentaba que el
+        // tope anual de 14 días era de FEAT-001b y no de este ticket, y por eso un período de 300 días
+        // se aceptaba en FEAT-001a. FEAT-001b es justamente el que lo entrega: el mismo período de 300
+        // días ahora tiene que rechazarse con el literal de AC-02/AC-03 —el prefijo es el mismo en los
+        // dos casos, y con el reloj fijo de esta clase el período cruza el 31 de diciembre, así que cae
+        // en el caso de dos años—. No se borra en silencio: este caso es la prueba de que el
+        // comportamiento documentado como «pendiente» cambió a propósito. El literal exacto, para uno y
+        // para dos años, lo verifica TopeAnualEnElAltaTests.
         _baseDeDatos.SaltearSiNoEstaDisponible();
         await using var empleado = await _baseDeDatos.CrearEmpleadoDescartableAsync();
 
@@ -124,14 +129,14 @@ public sealed class AltaDeSolicitudTests
 
         var resultado = await servicio.CrearAsync(inicio, inicio.AddDays(299), Cancelacion);
 
-        Assert.True(resultado.FueCreada, resultado.MensajeDeError);
+        Assert.False(resultado.FueCreada);
+        Assert.StartsWith(
+            "No dispones de días suficientes.", resultado.MensajeDeError, StringComparison.Ordinal);
 
         await using var relectura = _baseDeDatos.CrearContexto();
-        var persistida = await relectura.Solicitudes
-            .AsNoTracking()
-            .SingleAsync(solicitud => solicitud.Id == resultado.SolicitudId, Cancelacion);
-
-        Assert.Equal(300, persistida.DiasCorridos);
+        Assert.False(
+            await relectura.Solicitudes.AnyAsync(solicitud => solicitud.EmpleadoId == empleado.Id, Cancelacion),
+            "El período de 300 días quedó persistido pese a superar el tope anual.");
     }
 
     [Fact]
@@ -170,6 +175,16 @@ public sealed class AltaDeSolicitudTests
             "Quedó una solicitud a nombre de un empleado que no existe en la nómina.");
     }
 
-    private SolicitudesService ServicioPara(int empleadoId, TimeProvider tiempo) =>
-        new(new FabricaDeLaBaseDeTest(_baseDeDatos), IdentidadDePrueba.De(empleadoId), new PermisosService(), tiempo);
+    private SolicitudesService ServicioPara(int empleadoId, TimeProvider tiempo)
+    {
+        var fabrica = new FabricaDeLaBaseDeTest(_baseDeDatos);
+        var identidad = IdentidadDePrueba.De(empleadoId);
+        var permisos = new PermisosService();
+        var saldo = new SaldoService(fabrica, identidad, permisos, tiempo);
+
+        // Bloque 3 de FEAT-001b: quinta y sexta dependencia de SolicitudesService. Ningún caso de esta
+        // clase afirma sobre el log, así que un NullLogger alcanza; TopeAnualEnElAltaTests es quien
+        // ejercita el registro de verdad (R-18).
+        return new SolicitudesService(fabrica, identidad, permisos, tiempo, saldo, NullLogger<SolicitudesService>.Instance);
+    }
 }

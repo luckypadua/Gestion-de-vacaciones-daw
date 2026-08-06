@@ -1,4 +1,5 @@
 using GestionVacaciones.Data.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace GestionVacaciones.Tests.Dominio;
@@ -107,11 +108,16 @@ public sealed class ValidacionDelAltaTests
         // de validación —que la interfaz mostraría junto al formulario como si fuera culpa de las
         // fechas—.
         var tiempo = new TiempoFijo(_instanteFijo);
+        var fabrica = new FabricaQueNadieDebeUsar();
+        var identidad = IdentidadDePrueba.SinSeleccionar();
+        var permisos = new PermisosService();
         var servicio = new SolicitudesService(
-            new FabricaQueNadieDebeUsar(),
-            IdentidadDePrueba.SinSeleccionar(),
-            new PermisosService(),
-            tiempo);
+            fabrica,
+            identidad,
+            permisos,
+            tiempo,
+            new SaldoService(fabrica, identidad, permisos, tiempo),
+            NullLogger<SolicitudesService>.Instance);
 
         var inicio = tiempo.Hoy.AddDays(3);
 
@@ -126,11 +132,17 @@ public sealed class ValidacionDelAltaTests
         // solicitudes», que es exactamente lo que la tabla de errores prohíbe confundir con «no hay
         // identidad». Los tres estados —sin identidad, sin solicitudes, y error— se ven parecidos en
         // pantalla y significan cosas distintas.
+        var tiempo = new TiempoFijo(_instanteFijo);
+        var fabrica = new FabricaQueNadieDebeUsar();
+        var identidad = IdentidadDePrueba.SinSeleccionar();
+        var permisos = new PermisosService();
         var servicio = new SolicitudesService(
-            new FabricaQueNadieDebeUsar(),
-            IdentidadDePrueba.SinSeleccionar(),
-            new PermisosService(),
-            new TiempoFijo(_instanteFijo));
+            fabrica,
+            identidad,
+            permisos,
+            tiempo,
+            new SaldoService(fabrica, identidad, permisos, tiempo),
+            NullLogger<SolicitudesService>.Instance);
 
         await Assert.ThrowsAsync<SinEmpleadoSeleccionadoException>(() => servicio.ListarPropiasAsync(Cancelacion));
     }
@@ -139,6 +151,25 @@ public sealed class ValidacionDelAltaTests
     /// Servicio con identidad resuelta y con una fábrica de contextos que lanza si alguien la usa: es
     /// «este caso no llega a la base» hecho código.
     /// </summary>
-    private static SolicitudesService ServicioSinBase(TimeProvider tiempo) =>
-        new(new FabricaQueNadieDebeUsar(), IdentidadDePrueba.De(EmpleadoActual), new PermisosService(), tiempo);
+    /// <remarks>
+    /// FEAT-001b, Bloque 3: <c>SolicitudesService</c> ganó <c>SaldoService</c> e <c>ILogger</c> como
+    /// quinta y sexta dependencia. Ningún caso de esta clase llega a invocarlas —todos se rechazan antes,
+    /// por fecha o por identidad—, así que un <c>NullLogger</c> y un <c>SaldoService</c> con la misma
+    /// fábrica que revienta alcanzan: si alguno se usara, el propio guardarraíl de este helper lo
+    /// delataría.
+    /// </remarks>
+    private static SolicitudesService ServicioSinBase(TimeProvider tiempo)
+    {
+        var fabrica = new FabricaQueNadieDebeUsar();
+        var identidad = IdentidadDePrueba.De(EmpleadoActual);
+        var permisos = new PermisosService();
+
+        return new SolicitudesService(
+            fabrica,
+            identidad,
+            permisos,
+            tiempo,
+            new SaldoService(fabrica, identidad, permisos, tiempo),
+            NullLogger<SolicitudesService>.Instance);
+    }
 }

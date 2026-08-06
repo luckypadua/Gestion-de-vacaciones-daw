@@ -2,6 +2,7 @@ using GestionVacaciones.Data;
 using GestionVacaciones.Data.Entidades;
 using GestionVacaciones.Data.Services;
 using GestionVacaciones.Tests.Persistencia;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace GestionVacaciones.Tests.Dominio;
@@ -127,12 +128,23 @@ public sealed class ListadoPropioTests
         Assert.Equal(tiempo.Ahora, laSuya.FechaCreacion);
     }
 
-    private SolicitudesService ServicioPara(int empleadoId, TimeProvider? tiempo = null) =>
-        new(
-            new FabricaDeLaBaseDeTest(_baseDeDatos),
-            IdentidadDePrueba.De(empleadoId),
-            new PermisosService(),
-            tiempo ?? new TiempoFijo(_instanteFijo));
+    /// <remarks>
+    /// FEAT-001b, Bloque 3: <c>SolicitudesService</c> ganó <c>SaldoService</c> como quinta dependencia.
+    /// <see cref="Lo_que_el_alta_crea_aparece_en_el_listado_del_mismo_empleado"/> ejercita
+    /// <c>CrearAsync</c> de verdad contra la base descartable, así que acá el <c>SaldoService</c> tiene
+    /// que ser uno de verdad —con la misma fábrica— y no uno que reviente.
+    /// </remarks>
+    private SolicitudesService ServicioPara(int empleadoId, TimeProvider? tiempo = null)
+    {
+        var fabrica = new FabricaDeLaBaseDeTest(_baseDeDatos);
+        var identidad = IdentidadDePrueba.De(empleadoId);
+        var permisos = new PermisosService();
+        var tiempoEfectivo = tiempo ?? new TiempoFijo(_instanteFijo);
+        var saldo = new SaldoService(fabrica, identidad, permisos, tiempoEfectivo);
+
+        return new SolicitudesService(
+            fabrica, identidad, permisos, tiempoEfectivo, saldo, NullLogger<SolicitudesService>.Instance);
+    }
 
     /// <summary>
     /// Siembra solicitudes por el contexto y no por el servicio: los estados <c>Aprobada</c> y

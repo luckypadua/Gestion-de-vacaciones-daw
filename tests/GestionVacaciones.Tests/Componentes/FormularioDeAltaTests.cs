@@ -49,6 +49,10 @@ public sealed class FormularioDeAltaTests : ContextoDeComponentes
         Services.AddSingleton<IDbContextFactory<VacacionesDbContext>>(new FabricaQueNadieDebeUsar());
         Services.AddSingleton<IEmpleadoActualProvider>(IdentidadDePrueba.De(EmpleadoActual));
         Services.AddSingleton<PermisosService>();
+
+        // FEAT-001b, Bloque 3: quinta dependencia de SolicitudesService, con el mismo registro que
+        // Program.RegistrarDominio. Sin ella, el contenedor no puede activar SolicitudesService.
+        Services.AddSingleton<SaldoService>();
         Services.AddSingleton<SolicitudesService>();
     }
 
