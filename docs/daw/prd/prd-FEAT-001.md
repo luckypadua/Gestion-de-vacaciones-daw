@@ -4,7 +4,7 @@
 |--------|-------|
 | Ticket | FEAT-001 |
 | Date | 2026-08-01 |
-| Status | Split |
+| Status | Split — los 3 sub-tickets completos (a, b, c); integración pendiente de mergear los 3 PRs en cadena |
 
 ## Sub-tickets
 
@@ -12,7 +12,7 @@
 |---|---|---|---|---|---|
 | FEAT-001a | Andamiaje, identidad del empleado y alta de solicitud con validación de fechas y listado propio | `prd-FEAT-001a.md` | none | done | [PR #1](https://github.com/luckypadua/Gestion-de-vacaciones-daw/pull/1) (draft) — se integra al mergearlo |
 | FEAT-001b | Imputación de días por año calendario, tope anual y saldo | `prd-FEAT-001b.md` | depends on a | done | [PR #2](https://github.com/luckypadua/Gestion-de-vacaciones-daw/pull/2) (draft, contra `feat/FEAT-001a-andamiaje-alta-solicitud`) — rama dejada; FEAT-001c parte de su punta |
-| FEAT-001c | No superposición de períodos | `prd-FEAT-001c.md` | depends on a | active | — |
+| FEAT-001c | No superposición de períodos | `prd-FEAT-001c.md` | depends on a | done | [PR #3](https://github.com/luckypadua/Gestion-de-vacaciones-daw/pull/3) (draft, contra `feat/FEAT-001b-imputacion-tope-saldo`) — se integra cuando se mergeen los 3 PRs en cadena (#1 → #2 → #3) |
 
 > **Mientras el PR #1 no se mergee, `master` no tiene nada de FEAT-001a.** La rama de FEAT-001b sale
 > entonces de `feat/FEAT-001a-andamiaje-alta-solicitud`, no de `master`: `b` depende del modelo, del
