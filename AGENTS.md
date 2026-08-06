@@ -75,7 +75,8 @@ Leave it empty and that validation has nothing to compare against, so it stops b
     - `Migrations/` — migraciones de EF Core; **son ellas** las que definen el esquema
     - `Services/` — reglas de negocio y única vía de acceso a datos: `SolicitudesService`,
       `SaldoService`, `PermisosService`, `EmpleadosService`, `CalculadorDeDiasCorridos`,
-      `ImputacionPorAnio`, `TopeAnual`, `ErroresDeSolicitud`, `IEmpleadoActualProvider`
+      `ImputacionPorAnio`, `TopeAnual`, `EstadosDeSolicitud`, `ErroresDeSolicitud`,
+      `IEmpleadoActualProvider`
     - raíz — `VacacionesDbContext`, `VacacionesDbContextFactory` (tiempo de diseño), `SeedDatos`
   - `src/GestionVacaciones.Web/` — frontend Blazor + MudBlazor y punto de arranque
     - `Components/` — `App.razor`, `Routes.razor`, `_Imports.razor`

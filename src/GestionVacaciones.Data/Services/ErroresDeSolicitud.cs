@@ -52,6 +52,15 @@ public static class ErroresDeSolicitud
         "La fecha de fin no puede ser anterior a la fecha de inicio";
 
     /// <summary>
+    /// FEAT-001c AC-01. Literal del PRD: no se reformula, no se le agrega puntuación. A diferencia de
+    /// los dos mensajes de FEAT-001b, no lleva ningún dato de la persona —es igual para cualquier
+    /// empleado—, así que se construye con <see cref="ResultadoDelAlta.Rechazada"/> y no con
+    /// <see cref="ResultadoDelAlta.RechazadaPorSaldoInsuficiente"/>.
+    /// </summary>
+    public const string SuperposicionDePeriodo =
+        "Ya tenés una solicitud que se superpone con estas fechas";
+
+    /// <summary>
     /// FEAT-001b AC-02, con el saldo del único año afectado. Literal del PRD, donde el marcador se
     /// escribe <c>X</c>.
     /// </summary>

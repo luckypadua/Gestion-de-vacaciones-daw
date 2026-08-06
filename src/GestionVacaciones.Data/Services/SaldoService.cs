@@ -83,9 +83,6 @@ public sealed class SaldoService
     /// </summary>
     public const int MaximoDeAniosPorConsulta = 2;
 
-    private static readonly EstadoSolicitud[] _estadosQueConsumenSaldo =
-        [EstadoSolicitud.Pendiente, EstadoSolicitud.Aprobada];
-
     private readonly IDbContextFactory<VacacionesDbContext> _fabrica;
     private readonly IEmpleadoActualProvider _empleadoActual;
     private readonly PermisosService _permisos;
@@ -208,7 +205,7 @@ public sealed class SaldoService
             .AsNoTracking()
             .Where(solicitud =>
                 solicitud.EmpleadoId == sujeto
-                && _estadosQueConsumenSaldo.Contains(solicitud.Estado)
+                && EstadosDeSolicitud.Vigentes.Contains(solicitud.Estado)
                 && solicitud.FechaInicio <= hasta
                 && solicitud.FechaFin >= desde)
             .Select(solicitud => new { solicitud.FechaInicio, solicitud.FechaFin })

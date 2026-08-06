@@ -1,6 +1,8 @@
 using System.Data;
 using GestionVacaciones.Data.Entidades;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace GestionVacaciones.Data.Services;
@@ -179,8 +181,21 @@ public sealed record SolicitudDelListado(
 /// <b>El tope anual, desde FEAT-001b (Bloque 3).</b> <see cref="CrearAsync"/> compara los días del
 /// período contra el saldo de cada año calendario que afecta, provisto por <see cref="SaldoService"/> —
 /// única fuente del cálculo (NFR-04)—, dentro de una transacción serializable que cierra la carrera de
-/// dos altas concurrentes del mismo empleado (R-17). La detección de superposición sigue fuera de
-/// alcance: la entrega FEAT-001c.
+/// dos altas concurrentes del mismo empleado (R-17).
+/// </para>
+/// <para>
+/// <b>La superposición de períodos, desde FEAT-001c (Bloque único).</b> Entre la lectura <i>fence</i> y
+/// el tope se intercala una tercera pregunta: ¿el período choca con otra solicitud del mismo empleado en
+/// alguno de los estados de <see cref="EstadosDeSolicitud.Vigentes"/>? Va <i>antes</i> del tope a
+/// propósito —es un problema más fundamental, porque esas fechas ya están reservadas, y más barato de
+/// comprobar, porque no necesita <see cref="SaldoService"/>—, y el orden queda fijado por
+/// <c>SuperposicionDePeriodosTests.La_superposicion_se_rechaza_sin_consultar_el_saldo</c>: monta
+/// <see cref="SaldoService"/> con una fábrica que revienta en cuanto alguien la usa, así que pasar
+/// confirma que la superposición se resolvió sin llegar a preguntarle al saldo. Detectada → mismo tipo
+/// de rechazo que el resto de las validaciones de este método,
+/// <see cref="ResultadoDelAlta.Rechazada"/> con <see cref="ErroresDeSolicitud.SuperposicionDePeriodo"/>
+/// —no <see cref="ResultadoDelAlta.RechazadaPorSaldoInsuficiente"/>: este mensaje no lleva ningún dato de
+/// la persona, así que no necesita la protección de R-14—.
 /// </para>
 /// <para>
 /// Acceso a datos siempre con <see cref="IDbContextFactory{TContext}"/> (NFR-05): cada operación abre y
@@ -298,8 +313,22 @@ public sealed class SolicitudesService
     /// </para>
     /// <para>
     /// Tope superado → <see cref="ResultadoDelAlta.RechazadaPorSaldoInsuficiente"/>, no excepción. Un
-    /// fallo real de persistencia, o cualquier excepción del motor —incluido un conflicto de
-    /// serialización, error 1205— se propaga tal cual, sin <c>catch</c> y sin reintento (R-16).
+    /// fallo real de persistencia se propaga tal cual, sin <c>catch</c> que lo enmascare.
+    /// </para>
+    /// <para>
+    /// <b>El reintento dirigido, desde FEAT-001c (R-16, R-20, C14 del modelo de amenazas).</b> Todo el
+    /// tramo desde <c>BeginTransactionAsync</c> hasta <c>CommitAsync</c> queda envuelto en un único punto
+    /// de captura para el conflicto de serialización de SQL Server —<c>SqlException</c> con
+    /// <c>Number == 1205</c>, la misma condición que R-16 de FEAT-001b nombra como «deadlock víctima»,
+    /// posiblemente envuelta en <see cref="DbUpdateException"/>—. Al capturarlo se abre una transacción
+    /// <b>nueva</b> y se repite <b>solo</b> la consulta de solapamiento, nunca el resto del flujo: si
+    /// ahora encuentra una fila —la que ganó la carrera ya está committeada y visible— el resultado es el
+    /// mismo rechazo por superposición, marcando en el log que vino del reintento; si no encuentra nada,
+    /// el conflicto no era una superposición y la excepción original se repropaga tal cual, sin convertir.
+    /// <b>No es el reintento en bucle que R-16 prohíbe para el tope</b>: es, como mucho, una única
+    /// repetición, dirigida a una sola pregunta, y solo ante ese código de error específico —cualquier
+    /// otro fallo del motor se sigue propagando sin ningún intento de conversión, tal como fija
+    /// <c>SuperposicionDePeriodosTests.El_conflicto_de_serializacion_que_no_es_superposicion_se_propaga</c>—.
     /// </para>
     /// </remarks>
     public async Task<ResultadoDelAlta> CrearAsync(
@@ -345,78 +374,190 @@ public sealed class SolicitudesService
         }
 
         await using var contexto = await _fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
-        await using var transaccion = await contexto.Database
-            .BeginTransactionAsync(IsolationLevel.Serializable, cancelacion)
-            .ConfigureAwait(false);
 
-        // Fuerza el lock de rango serializable de ESTA conexión sobre las filas del empleado, ANTES de
-        // decidir. Ver el remarks de este método para el porqué: sin esto, dos altas concurrentes no
-        // quedan protegidas aunque la transacción exista.
-        await contexto.Solicitudes
-            .AsNoTracking()
-            .Where(solicitud => solicitud.EmpleadoId == autor)
-            .AnyAsync(cancelacion)
-            .ConfigureAwait(false);
-
-        var saldos = await _saldo.DeLosAniosAsync(aniosAbarcados, cancelacion).ConfigureAwait(false);
-
-        var diasPorAnio = aniosAbarcados.Count == 1
-            ? [diasCorridos]
-            : PartirEntreLosDosAnios(fechaInicio, diasCorridos, aniosAbarcados[0]);
-
-        var indicesInsuficientes = new List<int>(saldos.Count);
-        for (var indice = 0; indice < saldos.Count; indice++)
+        try
         {
-            if (diasPorAnio[indice] > saldos[indice].DiasDisponibles)
+            await using var transaccion = await contexto.Database
+                .BeginTransactionAsync(IsolationLevel.Serializable, cancelacion)
+                .ConfigureAwait(false);
+
+            // Fuerza el lock de rango serializable de ESTA conexión sobre las filas del empleado, ANTES
+            // de decidir. Ver el remarks de este método para el porqué: sin esto, dos altas concurrentes
+            // no quedan protegidas aunque la transacción exista.
+            await contexto.Solicitudes
+                .AsNoTracking()
+                .Where(solicitud => solicitud.EmpleadoId == autor)
+                .AnyAsync(cancelacion)
+                .ConfigureAwait(false);
+
+            // FEAT-001c, AC-01: antes del tope y sobre la MISMA conexión que la lectura fence de arriba.
+            if (await HaySuperposicionAsync(contexto, autor, fechaInicio, fechaFin, cancelacion)
+                .ConfigureAwait(false))
             {
-                indicesInsuficientes.Add(indice);
+                return await RechazarPorSuperposicionAsync(transaccion, autor, CaminoDirecto, cancelacion)
+                    .ConfigureAwait(false);
+            }
+
+            var saldos = await _saldo.DeLosAniosAsync(aniosAbarcados, cancelacion).ConfigureAwait(false);
+
+            var diasPorAnio = aniosAbarcados.Count == 1
+                ? [diasCorridos]
+                : PartirEntreLosDosAnios(fechaInicio, diasCorridos, aniosAbarcados[0]);
+
+            var indicesInsuficientes = new List<int>(saldos.Count);
+            for (var indice = 0; indice < saldos.Count; indice++)
+            {
+                if (diasPorAnio[indice] > saldos[indice].DiasDisponibles)
+                {
+                    indicesInsuficientes.Add(indice);
+                }
+            }
+
+            if (indicesInsuficientes.Count > 0)
+            {
+                await transaccion.RollbackAsync(cancelacion).ConfigureAwait(false);
+
+                // R-18: EmpleadoId y año, nunca el mensaje compuesto (R-14) — el log no puede llevar lo
+                // que ToString() de ResultadoDelAlta ya se ocupa de no exponer.
+                _registro.LogInformation(
+                    "Rechazo por tope: empleado {EmpleadoId}, año(s) afectado(s) {AniosAfectados}, " +
+                    "{DiasSolicitados} días pedidos.",
+                    autor,
+                    string.Join(",", indicesInsuficientes.Select(indice => saldos[indice].Anio)),
+                    diasCorridos);
+
+                var mensaje = saldos.Count == 1
+                    ? ErroresDeSolicitud.ComponerSaldoInsuficiente(saldos[0].DiasDisponibles)
+                    : ErroresDeSolicitud.ComponerSaldoInsuficienteDeDosAnios(saldos[0], saldos[1]);
+
+                return ResultadoDelAlta.RechazadaPorSaldoInsuficiente(mensaje);
+            }
+
+            var solicitud = new Solicitud
+            {
+                EmpleadoId = autor,
+                FechaInicio = fechaInicio,
+                FechaFin = fechaFin,
+
+                // El mismo cálculo que muestra la interfaz (AC-01): un punto único, y la check
+                // constraint CK_Solicitud_DiasCoincidenConPeriodo rechazando cualquier discrepancia.
+                DiasCorridos = diasCorridos,
+
+                // Nace y permanece en Pendiente: el flujo de aprobación es de un ticket futuro, así que
+                // ninguna solicitud produce efectos todavía.
+                Estado = EstadoSolicitud.Pendiente,
+
+                // Con el desplazamiento local, que la columna «datetimeoffset» conserva: el historial de
+                // AC-05 muestra la hora a la que la persona pidió sus vacaciones, no su traducción a UTC.
+                FechaCreacion = _tiempo.GetLocalNow(),
+            };
+
+            contexto.Solicitudes.Add(solicitud);
+            await contexto.SaveChangesAsync(cancelacion).ConfigureAwait(false);
+            await transaccion.CommitAsync(cancelacion).ConfigureAwait(false);
+
+            return ResultadoDelAlta.Creada(solicitud.Id);
+        }
+        catch (Exception excepcion) when (EsConflictoDeSerializacion(excepcion))
+        {
+            // FEAT-001c (R-16, R-20, C14): el reintento dirigido. La transacción de arriba ya se
+            // deshizo —el conflicto la invalidó—, así que esta es una NUEVA, sobre un contexto nuevo
+            // (NFR-05), y lo único que se repite es la pregunta de la superposición.
+            await using var contextoDeReintento =
+                await _fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
+            await using var transaccionDeReintento = await contextoDeReintento.Database
+                .BeginTransactionAsync(IsolationLevel.Serializable, cancelacion)
+                .ConfigureAwait(false);
+
+            if (await HaySuperposicionAsync(contextoDeReintento, autor, fechaInicio, fechaFin, cancelacion)
+                .ConfigureAwait(false))
+            {
+                // La fila que ganó la carrera ya está committeada y visible: mismo rechazo de arriba,
+                // marcando en el log que esta vez vino del reintento.
+                return await RechazarPorSuperposicionAsync(
+                        transaccionDeReintento, autor, CaminoDeReintento, cancelacion)
+                    .ConfigureAwait(false);
+            }
+
+            // El conflicto NO era una superposición: se repropaga la excepción ORIGINAL, sin convertir
+            // (mismo criterio que R-16 para el tope: un fallo de motor no se disfraza de rechazo).
+            await transaccionDeReintento.RollbackAsync(cancelacion).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>Camino directo: la superposición se detectó sin que mediara ningún reintento.</summary>
+    private const string CaminoDirecto = "directo";
+
+    /// <summary>
+    /// Camino de reintento: la superposición se detectó después de un conflicto de serialización, en la
+    /// segunda consulta.
+    /// </summary>
+    private const string CaminoDeReintento = "reintento";
+
+    /// <summary>
+    /// Código de error de SQL Server para un conflicto de serialización —la misma condición que R-16 de
+    /// FEAT-001b nombra como «deadlock víctima»—.
+    /// </summary>
+    private const int CodigoDeConflictoDeSerializacion = 1205;
+
+    /// <summary>
+    /// FEAT-001c, AC-01. ¿Hay otra solicitud vigente del mismo empleado cuyo período toque
+    /// <paramref name="fechaInicio"/>–<paramref name="fechaFin"/>? Misma forma que la consulta que
+    /// <see cref="SaldoService.DeLosAniosAsync"/> ya ejecuta contra <c>VacacionesDbContext.IndiceDelSaldo</c>
+    /// (NFR-04): mismo <c>EmpleadoId</c>, mismo filtro por <see cref="EstadosDeSolicitud.Vigentes"/>, y el
+    /// mismo residual de solapamiento de fechas.
+    /// </summary>
+    private static Task<bool> HaySuperposicionAsync(
+        VacacionesDbContext contexto,
+        int autor,
+        DateOnly fechaInicio,
+        DateOnly fechaFin,
+        CancellationToken cancelacion) =>
+        contexto.Solicitudes
+            .AsNoTracking()
+            .Where(solicitud => solicitud.EmpleadoId == autor
+                && EstadosDeSolicitud.Vigentes.Contains(solicitud.Estado)
+                && solicitud.FechaInicio <= fechaFin
+                && solicitud.FechaFin >= fechaInicio)
+            .AnyAsync(cancelacion);
+
+    /// <summary>
+    /// El rechazo por superposición, en su forma completa: deshace <paramref name="transaccion"/>,
+    /// registra R-20 con <paramref name="autor"/> y <paramref name="camino"/> —nunca fechas, nunca el
+    /// identificador de la otra solicitud— y devuelve el rechazo con el literal de AC-01. Un único punto
+    /// para los dos caminos —directo y por reintento—, para que no puedan divergir en qué se loguea.
+    /// </summary>
+    private async Task<ResultadoDelAlta> RechazarPorSuperposicionAsync(
+        IDbContextTransaction transaccion, int autor, string camino, CancellationToken cancelacion)
+    {
+        await transaccion.RollbackAsync(cancelacion).ConfigureAwait(false);
+
+        _registro.LogInformation(
+            "Rechazo por superposición de período: empleado {EmpleadoId}, camino {Camino}.",
+            autor, camino);
+
+        return ResultadoDelAlta.Rechazada(ErroresDeSolicitud.SuperposicionDePeriodo);
+    }
+
+    /// <summary>
+    /// ¿<paramref name="excepcion"/> es —o envuelve— un <see cref="SqlException"/> con
+    /// <see cref="SqlException.Number"/> igual a <see cref="CodigoDeConflictoDeSerializacion"/>? Camina la
+    /// cadena de <see cref="Exception.InnerException"/> porque <see cref="DbUpdateException"/> puede
+    /// envolver el <see cref="SqlException"/> original.
+    /// </summary>
+    private static bool EsConflictoDeSerializacion(Exception excepcion)
+    {
+        for (var actual = excepcion; actual is not null; actual = actual.InnerException)
+        {
+            if (actual is SqlException sqlException
+                && sqlException.Number == CodigoDeConflictoDeSerializacion)
+            {
+                return true;
             }
         }
 
-        if (indicesInsuficientes.Count > 0)
-        {
-            await transaccion.RollbackAsync(cancelacion).ConfigureAwait(false);
-
-            // R-18: EmpleadoId y año, nunca el mensaje compuesto (R-14) — el log no puede llevar lo que
-            // ToString() de ResultadoDelAlta ya se ocupa de no exponer.
-            _registro.LogInformation(
-                "Rechazo por tope: empleado {EmpleadoId}, año(s) afectado(s) {AniosAfectados}, " +
-                "{DiasSolicitados} días pedidos.",
-                autor,
-                string.Join(",", indicesInsuficientes.Select(indice => saldos[indice].Anio)),
-                diasCorridos);
-
-            var mensaje = saldos.Count == 1
-                ? ErroresDeSolicitud.ComponerSaldoInsuficiente(saldos[0].DiasDisponibles)
-                : ErroresDeSolicitud.ComponerSaldoInsuficienteDeDosAnios(saldos[0], saldos[1]);
-
-            return ResultadoDelAlta.RechazadaPorSaldoInsuficiente(mensaje);
-        }
-
-        var solicitud = new Solicitud
-        {
-            EmpleadoId = autor,
-            FechaInicio = fechaInicio,
-            FechaFin = fechaFin,
-
-            // El mismo cálculo que muestra la interfaz (AC-01): un punto único, y la check constraint
-            // CK_Solicitud_DiasCoincidenConPeriodo rechazando cualquier discrepancia.
-            DiasCorridos = diasCorridos,
-
-            // Nace y permanece en Pendiente: el flujo de aprobación es de un ticket futuro, así que
-            // ninguna solicitud produce efectos todavía.
-            Estado = EstadoSolicitud.Pendiente,
-
-            // Con el desplazamiento local, que la columna «datetimeoffset» conserva: el historial de
-            // AC-05 muestra la hora a la que la persona pidió sus vacaciones, no su traducción a UTC.
-            FechaCreacion = _tiempo.GetLocalNow(),
-        };
-
-        contexto.Solicitudes.Add(solicitud);
-        await contexto.SaveChangesAsync(cancelacion).ConfigureAwait(false);
-        await transaccion.CommitAsync(cancelacion).ConfigureAwait(false);
-
-        return ResultadoDelAlta.Creada(solicitud.Id);
+        return false;
     }
 
     /// <summary>
