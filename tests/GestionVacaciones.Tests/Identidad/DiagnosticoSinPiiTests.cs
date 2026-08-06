@@ -116,6 +116,33 @@ public sealed class DiagnosticoSinPiiTests
     }
 
     [Fact]
+    public void El_ToString_de_SaldoDelAnio_no_lleva_los_dias_de_nadie()
+    {
+        // El saldo es PII —«a esta persona le quedan 2 días» dice cuánto se ausentó y cuánto puede
+        // ausentarse—, y este record es la proyección con la que sale de la capa de datos. Su ToString()
+        // autogenerado imprime los tres campos, así que interpolar el objeto en un log —el camino corto
+        // de siempre— publica los días junto al EmpleadoId que ya se registra: es el mismo razonamiento
+        // por el que R-14 saca el mensaje compuesto de ResultadoDelAlta.ToString().
+        var saldo = new SaldoDelAnio(Anio: 2027, DiasUsados: 8, DiasDisponibles: 6);
+
+        var descripcion = saldo.ToString();
+
+        // Los únicos dígitos son los del año. El año es política de calendario y no dato de nadie: si el
+        // ToString() del record volviera, los usados y los disponibles caerían acá.
+        Assert.Equal("2027", new string([.. descripcion.Where(char.IsDigit)]));
+
+        // Y los rótulos con que el record nombra los dos campos, para el caso en que alguien los
+        // formatee de una manera que no deje dígitos sueltos.
+        Assert.DoesNotContain(nameof(SaldoDelAnio.DiasUsados), descripcion, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(nameof(SaldoDelAnio.DiasDisponibles), descripcion, StringComparison.OrdinalIgnoreCase);
+
+        // La contracara imprescindible, igual que en los otros casos de esta clase: R-12 pide reemplazar
+        // el dato personal por lo que identifica al diagnóstico, no vaciarlo. Sin el año, la descripción
+        // no dice de qué saldo hablaba.
+        Assert.Contains(nameof(SaldoDelAnio.Anio), descripcion, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void El_ToString_de_un_alta_creada_no_lleva_mas_que_el_identificador()
     {
         // Un alta creada se describe con su identificador y nada más: el período que se acaba de
