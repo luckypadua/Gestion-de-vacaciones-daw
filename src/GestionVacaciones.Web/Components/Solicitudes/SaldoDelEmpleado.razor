@@ -1,0 +1,196 @@
+@using GestionVacaciones.Data.Services
+@inject SaldoService Saldo
+@inject ILogger<SaldoDelEmpleado> Registro
+
+@* El saldo del empleado actual: el año en curso siempre, y el del otro año cuando el período que hay
+   en el formulario cruza el 31 de diciembre (AC-05, AC-06). Muestra el resultado de una regla que
+   decide el servidor; no la decide acá (R-10). *@
+
+<div data-estado="@Estado" data-testid="@IdDelSaldo">
+    @if (_fallo)
+    {
+        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" data-testid="@IdDelFallo">
+            @MensajeDeFallo
+        </MudAlert>
+    }
+    else
+    {
+        <MudPaper Class="pa-4 mb-4" Elevation="1">
+            @if (_saldoDelAnioEnCurso is { } actual)
+            {
+                <div data-testid="@IdDelSaldoDelAnioEnCurso" data-anio="@actual.Anio">
+                    <MudText Typo="Typo.subtitle2">Año @actual.Anio</MudText>
+                    <MudText data-testid="@IdDeLosDiasUtilizados">@actual.DiasUsados días utilizados o reservados</MudText>
+                    <MudText data-testid="@IdDeLosDiasDisponibles">@actual.DiasDisponibles días disponibles</MudText>
+                </div>
+            }
+
+            @if (_saldoDelOtroAnio is { } otro)
+            {
+                <div data-testid="@IdDelSaldoDelOtroAnio" data-anio="@otro.Anio" class="mt-2">
+                    <MudText Typo="Typo.subtitle2">Año @otro.Anio</MudText>
+                    <MudText data-testid="@IdDeLosDiasUtilizados">@otro.DiasUsados días utilizados o reservados</MudText>
+                    <MudText data-testid="@IdDeLosDiasDisponibles">@otro.DiasDisponibles días disponibles</MudText>
+                </div>
+            }
+        </MudPaper>
+    }
+</div>
+
+@code {
+    /// <summary>Marcador del bloque entero: el único elemento que lleva <see cref="AtributoDelEstado"/>.</summary>
+    public const string IdDelSaldo = "saldo-del-empleado";
+
+    /// <summary>
+    /// Mismo nombre de atributo que usa <c>MisSolicitudes.AtributoDelEstado</c> para el suyo, pero en un
+    /// elemento propio de este componente: los valores de <see cref="EstadoCalculado"/> y
+    /// <see cref="EstadoFallo"/> no coinciden con ninguno de los que publica la página, así que un test
+    /// puede leerlos sin ambigüedad aunque el nombre del atributo se repita.
+    /// </summary>
+    public const string AtributoDelEstado = "data-estado";
+
+    /// <summary>Atributo con el año de cada bloque de saldo, para leerlo sin depender del texto.</summary>
+    public const string AtributoDelAnio = "data-anio";
+
+    /// <summary>El saldo se calculó: hay al menos el del año en curso para mostrar.</summary>
+    public const string EstadoCalculado = "saldo-calculado";
+
+    /// <summary>
+    /// El cálculo falló. El cuarto estado de la pantalla (AC-07): distinto de «sin empleado», «sin
+    /// solicitudes» y «error del listado», y sin ninguna cantidad de días.
+    /// </summary>
+    public const string EstadoFallo = "no-se-pudo-calcular-el-saldo";
+
+    public const string IdDelSaldoDelAnioEnCurso = "saldo-del-anio-en-curso";
+
+    public const string IdDelSaldoDelOtroAnio = "saldo-del-otro-anio";
+
+    /// <summary>
+    /// Distinto dentro de cada bloque de saldo, no entre bloques: el año en curso y el otro año
+    /// publican los dos este mismo marcador, y un test los distingue por el bloque que lo contiene
+    /// (ver <see cref="IdDelSaldoDelAnioEnCurso"/> y <see cref="IdDelSaldoDelOtroAnio"/>), igual que
+    /// <c>ListadoDeSolicitudes</c> distingue sus filas por <c>data-solicitud</c>.
+    /// </summary>
+    public const string IdDeLosDiasUtilizados = "dias-utilizados";
+
+    public const string IdDeLosDiasDisponibles = "dias-disponibles";
+
+    public const string IdDelFallo = "fallo-del-saldo";
+
+    /// <summary>
+    /// Genérico y sin ninguna cantidad de días (AC-07): un cero mentiría diciendo «no te quedan días»
+    /// cuando lo que pasó es que no se pudo calcular nada.
+    /// </summary>
+    public const string MensajeDeFallo = "No pudimos calcular tu saldo.";
+
+    private string Estado => _fallo ? EstadoFallo : EstadoCalculado;
+
+    /// <summary>
+    /// El período que tiene elegido <c>FormularioDeAlta</c>, tal como lo comunica su
+    /// <c>OnPeriodoCambiado</c>. <c>null</c> mientras falte alguna de las dos fechas.
+    /// </summary>
+    [Parameter]
+    public DateOnly? FechaInicio { get; set; }
+
+    [Parameter]
+    public DateOnly? FechaFin { get; set; }
+
+    private SaldoDelAnio? _saldoDelAnioEnCurso;
+    private SaldoDelAnio? _saldoDelOtroAnio;
+    private bool _fallo;
+
+    /// <summary>El saldo del año en curso, apenas se monta el componente (AC-05).</summary>
+    protected override Task OnInitializedAsync() => CargarSaldoDelAnioEnCursoAsync();
+
+    /// <summary>
+    /// El saldo del otro año, cada vez que el período cambia (AC-06). Corre <b>después</b> de
+    /// <see cref="OnInitializedAsync"/> en el primer render —<c>ComponentBase</c> los encadena— así que
+    /// ya tiene el año en curso para poder reconocer cuál de los dos años del período es «el otro».
+    /// </summary>
+    protected override Task OnParametersSetAsync() => ActualizarSaldoDelOtroAnioAsync();
+
+    /// <summary>
+    /// Su propia consulta, en su propio <c>try</c>: no vive dentro del <c>try</c> de
+    /// <c>MisSolicitudes.RecargarAsync</c>, cuyo <c>catch</c> pinta el error de toda la pantalla. Un
+    /// fallo acá solo apaga este bloque (AC-07); el listado y el formulario de alta siguen usables.
+    /// </summary>
+    private async Task CargarSaldoDelAnioEnCursoAsync()
+    {
+        try
+        {
+            _saldoDelAnioEnCurso = await Saldo.DelAnioEnCursoAsync();
+            _fallo = false;
+        }
+        catch (Exception excepcion)
+        {
+            // No es un catch silencioso: queda registrado con nada más que la excepción (R-12; no hay
+            // ningún identificador de persona en este componente para agregar).
+            Registro.LogError(excepcion, "No se pudo calcular el saldo del año en curso.");
+
+            _fallo = true;
+            _saldoDelAnioEnCurso = null;
+            _saldoDelOtroAnio = null;
+        }
+    }
+
+    /// <summary>
+    /// Pide el saldo del otro año cuando el período abarca dos años calendario (AC-06).
+    /// </summary>
+    /// <remarks>
+    /// <b>Con las dos fechas presentes, solo llama a <see cref="ImputacionPorAnio.AniosAbarcados"/> si
+    /// el período está en orden.</b> Esa función lanza con un período invertido, igual que su hermana
+    /// <c>CalculadorDeDiasCorridos.Contar</c>: comprobar el orden antes de preguntarle es el mismo deber
+    /// que ya tiene <c>FormularioDeAlta</c> al mostrar los días corridos. No es la interfaz validando la
+    /// regla —el rechazo del período invertido lo sigue emitiendo el servidor—, es evitar pedir un
+    /// cálculo cuya precondición no se cumple.
+    /// </remarks>
+    private async Task ActualizarSaldoDelOtroAnioAsync()
+    {
+        if (_fallo || _saldoDelAnioEnCurso is not { } actual)
+        {
+            // Sin el año en curso no hay con qué reconocer cuál de los dos años del período es «el
+            // otro», y si ya falló no hay ningún número que agregar.
+            return;
+        }
+
+        if (FechaInicio is not { } inicio || FechaFin is not { } fin || fin < inicio)
+        {
+            _saldoDelOtroAnio = null;
+            return;
+        }
+
+        var anios = ImputacionPorAnio.AniosAbarcados(inicio, fin);
+
+        if (anios.Count != 2)
+        {
+            // Un solo año: nada que agregar al que ya se muestra. Más de dos: el servidor lo va a
+            // rechazar por tope (R-15) sin que este componente necesite saberlo.
+            _saldoDelOtroAnio = null;
+            return;
+        }
+
+        var otroAnio = anios[0] == actual.Anio ? anios[1] : anios[0];
+
+        if (_saldoDelOtroAnio?.Anio == otroAnio)
+        {
+            // Ya está cargado: no repetir la consulta en cada tecla que no cambia de año.
+            return;
+        }
+
+        try
+        {
+            var saldos = await Saldo.DeLosAniosAsync([otroAnio]);
+            _saldoDelOtroAnio = saldos[0];
+        }
+        catch (Exception excepcion)
+        {
+            Registro.LogError(excepcion, "No se pudo calcular el saldo del otro año del período.");
+
+            // Un fallo acá deja al bloque entero sin número: mostrar el año en curso mientras el otro
+            // faltara sería un saldo a medias, y a medias también miente sobre cuánto queda.
+            _fallo = true;
+            _saldoDelAnioEnCurso = null;
+            _saldoDelOtroAnio = null;
+        }
+    }
+}
