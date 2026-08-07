@@ -168,6 +168,13 @@ public sealed class ListadoPropioTests
                 DiasCorridos = CalculadorDeDiasCorridos.Contar(inicio, fin),
                 Estado = estado,
                 FechaCreacion = creacion,
+
+                // Desde el Bloque 1 de FEAT-002, CK_Solicitud_ResolucionCoherente exige estos tres
+                // datos cuando el estado no es Pendiente. Quién "resolvió" no es lo que este test
+                // verifica (el listado propio), así que se reutiliza el propio empleado.
+                ResueltoPorId = estado == EstadoSolicitud.Pendiente ? null : empleadoId,
+                FechaResolucion = estado == EstadoSolicitud.Pendiente ? null : creacion,
+                MotivoDeRechazo = estado == EstadoSolicitud.Rechazada ? "Motivo de prueba" : null,
             });
         }
 

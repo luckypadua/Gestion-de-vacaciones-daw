@@ -1,5 +1,6 @@
 using GestionVacaciones.Data;
 using GestionVacaciones.Data.Entidades;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -10,7 +11,9 @@ namespace GestionVacaciones.Tests.Persistencia;
 
 /// <summary>
 /// B2-T1, B2-T2, B2-T3, B2-T9 y B2-T5: las invariantes que NFR-04 exige reforzar en la base, más el
-/// índice que sirve al listado de FR-04.
+/// índice que sirve al listado de FR-04. Desde el Bloque 1 de FEAT-002 se suma la quinta check
+/// constraint (<see cref="VacacionesDbContext.ResolucionCoherente"/>) y la FK de
+/// <c>ResueltoPorId</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -19,14 +22,14 @@ namespace GestionVacaciones.Tests.Persistencia;
 /// pasaría en verde afirmando lo contrario de lo que NFR-04 exige.
 /// </para>
 /// <para>
-/// <b>Sobre qué constraint nombra SQL Server.</b> Tres de las cuatro no son aislables entre sí:
-/// <c>CK_Solicitud_PeriodoCoherente</c> se deduce de las otras dos —si los días son positivos y
-/// coinciden con <c>DATEDIFF+1</c>, la fecha de fin no puede ser anterior a la de inicio— y
-/// <c>CK_Solicitud_DiasPositivos</c> se deduce de las otras dos por el mismo camino. No existe fila
-/// que viole una sola. Cuando varias se violan a la vez SQL Server informa una y no documenta cuál,
-/// así que estos tests afirman que la rechazada está entre las que la fila viola de verdad, y
-/// <see cref="Las_cuatro_check_constraints_de_NFR_04_existen_en_la_base"/> cierra el hueco
-/// comprobando que las cuatro existen con su definición.
+/// <b>Sobre qué constraint nombra SQL Server.</b> Tres de las cuatro originales no son aislables
+/// entre sí: <c>CK_Solicitud_PeriodoCoherente</c> se deduce de las otras dos —si los días son
+/// positivos y coinciden con <c>DATEDIFF+1</c>, la fecha de fin no puede ser anterior a la de
+/// inicio— y <c>CK_Solicitud_DiasPositivos</c> se deduce de las otras dos por el mismo camino. No
+/// existe fila que viole una sola. Cuando varias se violan a la vez SQL Server informa una y no
+/// documenta cuál, así que estos tests afirman que la rechazada está entre las que la fila viola de
+/// verdad, y <see cref="Las_cinco_check_constraints_de_NFR_04_existen_en_la_base"/> cierra el hueco
+/// comprobando que las cinco existen con su definición.
 /// </para>
 /// </remarks>
 [Collection(ColeccionDeBaseDeDatos.Nombre)]
@@ -43,6 +46,25 @@ public sealed class EsquemaDeSolicitudTests
 
     private static readonly DateTimeOffset _momentoDeCreacion =
         new(2026, 3, 4, 5, 6, 7, TimeSpan.FromHours(-3));
+
+    /// <summary>Las cuatro check constraints anteriores al Bloque 1 de FEAT-002, en orden alfabético.</summary>
+    private static readonly string[] _lasCuatroConstraintsAnteriores =
+    [
+        VacacionesDbContext.DiasCoincidenConPeriodo,
+        VacacionesDbContext.DiasPositivos,
+        VacacionesDbContext.EstadoValido,
+        VacacionesDbContext.PeriodoCoherente,
+    ];
+
+    /// <summary>Las cinco check constraints vigentes desde el Bloque 1 de FEAT-002, en orden alfabético.</summary>
+    private static readonly string[] _lasCincoConstraints =
+    [
+        VacacionesDbContext.DiasCoincidenConPeriodo,
+        VacacionesDbContext.DiasPositivos,
+        VacacionesDbContext.EstadoValido,
+        VacacionesDbContext.PeriodoCoherente,
+        VacacionesDbContext.ResolucionCoherente,
+    ];
 
     private readonly BaseDeDatosDeTest _baseDeDatos;
 
@@ -174,12 +196,13 @@ public sealed class EsquemaDeSolicitudTests
     }
 
     /// <summary>
-    /// Nombre de la migración inicial, previa a la de este bloque. Es el destino de la reversión que
+    /// Nombre de la migración inmediatamente anterior a la de este bloque
+    /// (<c>ColumnasDeResolucion</c>, FEAT-002 Bloque 1). Es el destino de la reversión que
     /// <see cref="La_migracion_revierte_dejando_el_esquema_anterior"/> ejercita. Vive acá como
     /// literal porque es un hecho del historial de migraciones, no del modelo: no hay una constante
     /// del lado de producción a la que atarlo.
     /// </summary>
-    private const string NombreDeLaMigracionInicial = "20260802014814_InicialV2";
+    private const string NombreDeLaMigracionAnterior = "20260806034345_IndiceDelSaldo";
 
     [Fact]
     public async Task El_indice_del_saldo_existe_con_sus_columnas_y_su_orden()
@@ -195,33 +218,25 @@ public sealed class EsquemaDeSolicitudTests
     }
 
     [Fact]
-    public async Task Las_check_constraints_siguen_siendo_las_mismas_cuatro()
+    public async Task Las_check_constraints_siguen_siendo_las_mismas_cinco()
     {
-        // El Block 5 solo agrega un índice: la imputación por año es un dato derivado de
-        // FechaInicio/FechaFin y no se persiste, así que no hay una quinta constraint que agregar.
-        // Confirmación explícita del bloque, distinta de
-        // Las_cuatro_check_constraints_de_NFR_04_existen_en_la_base (que sigue verde sin tocarla).
+        // El Bloque 1 de FEAT-002 agrega CK_Solicitud_ResolucionCoherente, la quinta. Confirmación
+        // explícita del bloque, distinta de Las_cinco_check_constraints_de_NFR_04_existen_en_la_base
+        // (que además ata cada nombre a la definición completa).
         _baseDeDatos.SaltearSiNoEstaDisponible();
         await using var contexto = _baseDeDatos.CrearContexto();
 
         var existentes = await ObtenerCheckConstraintsAsync(contexto);
 
-        Assert.Equal(
-            new[]
-            {
-                VacacionesDbContext.DiasCoincidenConPeriodo,
-                VacacionesDbContext.DiasPositivos,
-                VacacionesDbContext.EstadoValido,
-                VacacionesDbContext.PeriodoCoherente,
-            },
-            existentes);
+        Assert.Equal(_lasCincoConstraints, existentes);
     }
 
     [Fact]
     public async Task La_migracion_revierte_dejando_el_esquema_anterior()
     {
-        // Camino triste del Block 5: la migración aplica y revierte limpiamente, y la reversión no se
-        // lleva puesta ninguna de las cuatro check constraints que no le pertenecen.
+        // Camino triste del Bloque 1 de FEAT-002: la migración aplica y revierte limpiamente. Ida:
+        // la quinta constraint y las tres columnas de resolución existen. Vuelta: desaparecen las
+        // tres columnas y la quinta constraint, y las cuatro anteriores siguen tal cual estaban.
         _baseDeDatos.SaltearSiNoEstaDisponible();
         await using var contexto = _baseDeDatos.CrearContexto();
         var migrador = ObtenerMigrador(contexto);
@@ -231,21 +246,16 @@ public sealed class EsquemaDeSolicitudTests
             // Ida: el fixture ya aplicó todas las migraciones al preparar la base, pero se reafirma
             // acá para que el test no dependa de ese orden implícito.
             await migrador.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
-            Assert.NotEmpty(await ColumnasDelIndiceAsync(contexto, VacacionesDbContext.IndiceDelSaldo));
+            Assert.Equal(_lasCincoConstraints, await ObtenerCheckConstraintsAsync(contexto));
+            Assert.Equal(
+                new[] { "FechaResolucion", "MotivoDeRechazo", "ResueltoPorId" },
+                await ColumnasDeResolucionAsync(contexto));
 
             // Vuelta: revierte a la migración anterior a la de este bloque.
-            await migrador.MigrateAsync(NombreDeLaMigracionInicial, TestContext.Current.CancellationToken);
+            await migrador.MigrateAsync(NombreDeLaMigracionAnterior, TestContext.Current.CancellationToken);
 
-            Assert.Empty(await ColumnasDelIndiceAsync(contexto, VacacionesDbContext.IndiceDelSaldo));
-            Assert.Equal(
-                new[]
-                {
-                    VacacionesDbContext.DiasCoincidenConPeriodo,
-                    VacacionesDbContext.DiasPositivos,
-                    VacacionesDbContext.EstadoValido,
-                    VacacionesDbContext.PeriodoCoherente,
-                },
-                await ObtenerCheckConstraintsAsync(contexto));
+            Assert.Equal(_lasCuatroConstraintsAnteriores, await ObtenerCheckConstraintsAsync(contexto));
+            Assert.Empty(await ColumnasDeResolucionAsync(contexto));
         }
         finally
         {
@@ -254,11 +264,14 @@ public sealed class EsquemaDeSolicitudTests
             await migrador.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
 
-        Assert.NotEmpty(await ColumnasDelIndiceAsync(contexto, VacacionesDbContext.IndiceDelSaldo));
+        Assert.Equal(_lasCincoConstraints, await ObtenerCheckConstraintsAsync(contexto));
+        Assert.Equal(
+            new[] { "FechaResolucion", "MotivoDeRechazo", "ResueltoPorId" },
+            await ColumnasDeResolucionAsync(contexto));
     }
 
     [Fact]
-    public async Task Las_cuatro_check_constraints_de_NFR_04_existen_en_la_base()
+    public async Task Las_cinco_check_constraints_de_NFR_04_existen_en_la_base()
     {
         // Cierra el hueco que dejan B2-T1 y B2-T2: como ninguna de sus filas viola una sola
         // constraint, borrar CK_Solicitud_PeriodoCoherente del modelo los dejaría en verde. Acá no.
@@ -274,21 +287,13 @@ public sealed class EsquemaDeSolicitudTests
                 """)
             .ToListAsync(TestContext.Current.CancellationToken);
 
-        Assert.Equal(
-            new[]
-            {
-                VacacionesDbContext.DiasCoincidenConPeriodo,
-                VacacionesDbContext.DiasPositivos,
-                VacacionesDbContext.EstadoValido,
-                VacacionesDbContext.PeriodoCoherente,
-            },
-            existentes);
+        Assert.Equal(_lasCincoConstraints, existentes);
     }
 
     [Fact]
     public async Task La_definicion_de_cada_check_constraint_menciona_las_columnas_que_debe_vigilar()
     {
-        // Que existan cuatro nombres no dice que vigilen algo: una constraint «1 = 1» pasaría el test
+        // Que existan cinco nombres no dice que vigilen algo: una constraint «1 = 1» pasaría el test
         // anterior. Esto ata cada nombre a las columnas de su invariante.
         _baseDeDatos.SaltearSiNoEstaDisponible();
         await using var contexto = _baseDeDatos.CrearContexto();
@@ -311,6 +316,95 @@ public sealed class EsquemaDeSolicitudTests
         Assert.Contains(
             "datediff", porNombre[VacacionesDbContext.DiasCoincidenConPeriodo], StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Estado", porNombre[VacacionesDbContext.EstadoValido], StringComparison.Ordinal);
+        Assert.Contains("ResueltoPorId", porNombre[VacacionesDbContext.ResolucionCoherente], StringComparison.Ordinal);
+        Assert.Contains("FechaResolucion", porNombre[VacacionesDbContext.ResolucionCoherente], StringComparison.Ordinal);
+        Assert.Contains("MotivoDeRechazo", porNombre[VacacionesDbContext.ResolucionCoherente], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task La_check_constraint_de_resolucion_exige_coherencia_con_el_estado()
+    {
+        // Camino triste del Bloque 1 de FEAT-002: las tres combinaciones incoherentes que
+        // CK_Solicitud_ResolucionCoherente tiene que rechazar, insertadas directamente por SQL (no
+        // vía SaveChanges) para probar la constraint en sí misma, no el mapeo de EF.
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+        await using var empleado = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var resolutor = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var contexto = _baseDeDatos.CrearContexto();
+
+        // Pendiente con datos de resolución: la constraint exige que los tres campos sean NULL.
+        var pendienteConResolucion = await IntentarInsertarPorSqlAsync(
+            contexto,
+            empleado.Id,
+            EstadoSolicitud.Pendiente,
+            resueltoPorId: resolutor.Id,
+            fechaResolucion: _momentoDeCreacion,
+            motivoDeRechazo: null);
+        AfirmarQueMencionaLaConstraintDeResolucion(pendienteConResolucion);
+
+        // Aprobada sin quién ni cuándo resolvió.
+        var aprobadaSinResolucion = await IntentarInsertarPorSqlAsync(
+            contexto,
+            empleado.Id,
+            EstadoSolicitud.Aprobada,
+            resueltoPorId: null,
+            fechaResolucion: null,
+            motivoDeRechazo: null);
+        AfirmarQueMencionaLaConstraintDeResolucion(aprobadaSinResolucion);
+
+        // Rechazada sin motivo.
+        var rechazadaSinMotivo = await IntentarInsertarPorSqlAsync(
+            contexto,
+            empleado.Id,
+            EstadoSolicitud.Rechazada,
+            resueltoPorId: resolutor.Id,
+            fechaResolucion: _momentoDeCreacion,
+            motivoDeRechazo: null);
+        AfirmarQueMencionaLaConstraintDeResolucion(rechazadaSinMotivo);
+
+        await AfirmarQueNoQuedoNadaPersistidoAsync(empleado.Id);
+    }
+
+    [Fact]
+    public async Task La_fk_de_resueltoPorId_no_hace_cascada()
+    {
+        // Camino triste del Bloque 1 de FEAT-002: igual que ya pasa con EmpleadoId, borrar a quien
+        // resolvió una solicitud falla en vez de arrastrarla con él (DeleteBehavior.NoAction).
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+        await using var resolutor = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var solicitante = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+
+        await using (var contexto = _baseDeDatos.CrearContexto())
+        {
+            contexto.Solicitudes.Add(new Solicitud
+            {
+                EmpleadoId = solicitante.Id,
+                FechaInicio = new DateOnly(2026, 1, 3),
+                FechaFin = new DateOnly(2026, 1, 5),
+                DiasCorridos = 3,
+                Estado = EstadoSolicitud.Aprobada,
+                FechaCreacion = _momentoDeCreacion,
+                ResueltoPorId = resolutor.Id,
+                FechaResolucion = _momentoDeCreacion,
+            });
+
+            await contexto.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using (var contexto = _baseDeDatos.CrearContexto())
+        {
+            var empleadoAEliminar = await contexto.Empleados.SingleAsync(
+                empleado => empleado.Id == resolutor.Id, TestContext.Current.CancellationToken);
+            contexto.Empleados.Remove(empleadoAEliminar);
+
+            await Assert.ThrowsAsync<DbUpdateException>(
+                () => contexto.SaveChangesAsync(TestContext.Current.CancellationToken));
+        }
+
+        // La solicitud de `solicitante` se borra al salir del alcance (EmpleadoDescartable), lo que
+        // libera a `resolutor` antes de que este se borre a su vez: `await using` dispone en el
+        // orden inverso al de declaración, así que `solicitante` (declarado después) se limpia
+        // primero.
     }
 
     /// <summary>Servicio de migraciones del contexto, para migrar a un destino puntual (Block 5).</summary>
@@ -343,6 +437,21 @@ public sealed class EsquemaDeSolicitudTests
                 """)
             .ToListAsync(TestContext.Current.CancellationToken);
 
+    /// <summary>
+    /// Las tres columnas de resolución del Bloque 1 de FEAT-002, las que existan de verdad en la
+    /// base en este momento, en orden alfabético. Vacío si ninguna existe (esquema anterior).
+    /// </summary>
+    private async Task<List<string>> ColumnasDeResolucionAsync(VacacionesDbContext contexto) =>
+        await contexto.Database
+            .SqlQuery<string>($"""
+                SELECT name AS Value
+                FROM sys.columns
+                WHERE object_id = OBJECT_ID({TablaDeSolicitudes})
+                  AND name IN (N'ResueltoPorId', N'FechaResolucion', N'MotivoDeRechazo')
+                ORDER BY name
+                """)
+            .ToListAsync(TestContext.Current.CancellationToken);
+
     private async Task<DbUpdateException> IntentarPersistirAsync(Solicitud solicitud)
     {
         await using var contexto = _baseDeDatos.CrearContexto();
@@ -350,6 +459,35 @@ public sealed class EsquemaDeSolicitudTests
 
         return await Assert.ThrowsAsync<DbUpdateException>(
             () => contexto.SaveChangesAsync(TestContext.Current.CancellationToken));
+    }
+
+    /// <summary>
+    /// Inserta directamente por SQL (no vía <c>SaveChanges</c>), para que el fallo sea de la
+    /// constraint en sí y no del mapeo de EF. El período (3-ene → 5-ene, 3 días) siempre es
+    /// coherente con las otras cuatro constraints, así que la única que puede rechazar la fila es
+    /// <see cref="VacacionesDbContext.ResolucionCoherente"/>.
+    /// </summary>
+    private async Task<SqlException> IntentarInsertarPorSqlAsync(
+        VacacionesDbContext contexto,
+        int empleadoId,
+        EstadoSolicitud estado,
+        int? resueltoPorId,
+        DateTimeOffset? fechaResolucion,
+        string? motivoDeRechazo)
+    {
+        var inicio = new DateOnly(2026, 1, 3);
+        var fin = new DateOnly(2026, 1, 5);
+
+        return await Assert.ThrowsAsync<SqlException>(() => contexto.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO dbo.Solicitudes
+                (EmpleadoId, FechaInicio, FechaFin, DiasCorridos, Estado, FechaCreacion,
+                 ResueltoPorId, FechaResolucion, MotivoDeRechazo)
+            VALUES
+                ({empleadoId}, {inicio}, {fin}, 3, {(int)estado}, {_momentoDeCreacion},
+                 {resueltoPorId}, {fechaResolucion}, {motivoDeRechazo})
+            """,
+            TestContext.Current.CancellationToken));
     }
 
     private async Task AfirmarQueNoQuedoNadaPersistidoAsync(int empleadoId)
@@ -371,4 +509,7 @@ public sealed class EsquemaDeSolicitudTests
             esperadas.Any(nombre => detalle.Contains(nombre, StringComparison.Ordinal)),
             $"Se esperaba el rechazo de alguna de [{string.Join(", ", esperadas)}], y SQL Server informó: {detalle}");
     }
+
+    private static void AfirmarQueMencionaLaConstraintDeResolucion(SqlException excepcion) =>
+        Assert.Contains(VacacionesDbContext.ResolucionCoherente, excepcion.Message, StringComparison.Ordinal);
 }

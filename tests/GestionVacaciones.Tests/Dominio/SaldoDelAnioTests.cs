@@ -215,6 +215,13 @@ public sealed class SaldoDelAnioTests
             DiasCorridos = CalculadorDeDiasCorridos.Contar(inicio, fin),
             Estado = estado,
             FechaCreacion = _instanteEn2026,
+
+            // Desde el Bloque 1 de FEAT-002, CK_Solicitud_ResolucionCoherente exige estos tres datos
+            // cuando el estado no es Pendiente. Quién "resolvió" no es lo que este test verifica (el
+            // saldo), así que se reutiliza el propio empleado.
+            ResueltoPorId = estado == EstadoSolicitud.Pendiente ? null : empleadoId,
+            FechaResolucion = estado == EstadoSolicitud.Pendiente ? null : _instanteEn2026,
+            MotivoDeRechazo = estado == EstadoSolicitud.Rechazada ? "Motivo de prueba" : null,
         });
 
         await contexto.SaveChangesAsync(Cancelacion);
