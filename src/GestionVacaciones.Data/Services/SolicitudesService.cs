@@ -213,6 +213,44 @@ public sealed record SolicitudDelListado(
 }
 
 /// <summary>
+/// Una solicitud <c>Pendiente</c> del equipo, tal como la necesita la pantalla de autorizaciones
+/// (FEAT-002, Bloque 4, FR-05/AC-07): el período, sus días corridos, cuándo se creó y de quién es —con
+/// su nombre, para que el listado sea utilizable sin que quien resuelve tenga que ir a buscar a qué
+/// persona corresponde cada <c>EmpleadoId</c>.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b><see cref="NombreDelEmpleado"/> es la única vez que ese campo de <c>Empleado</c> viaja fuera de
+/// la propia persona en toda la aplicación</b> (mitigación de la parte de <i>Information Disclosure</i>
+/// de R-22): está acotado a quien ya tiene autoridad confirmada sobre ese empleado, porque
+/// <see cref="SolicitudesService.ListarPendientesDelEquipoAsync"/> solo llega a construir esta
+/// proyección para los identificadores que <see cref="PermisosService.EmpleadosBajoAutoridadDeAsync"/>
+/// ya devolvió. Ningún otro dato de <c>Empleado</c> —<c>Correo</c> en particular— viaja acá.
+/// </para>
+/// <para>
+/// Es una proyección y no la entidad <c>Solicitud</c>, mismo motivo que <see cref="SolicitudDelListado"/>.
+/// </para>
+/// </remarks>
+public sealed record SolicitudPendienteDelEquipo(
+    int Id,
+    int EmpleadoId,
+    string NombreDelEmpleado,
+    DateOnly FechaInicio,
+    DateOnly FechaFin,
+    int DiasCorridos,
+    DateTimeOffset FechaCreacion)
+{
+    /// <summary>
+    /// Descripción para diagnóstico: identificadores y período, <b>sin</b> <see cref="NombreDelEmpleado"/>
+    /// —es PII (R-12)—. Mismo motivo que <see cref="SolicitudDelListado.ToString"/>: el <c>record</c>
+    /// generado imprimiría todas las propiedades, y esta es la única proyección del dominio con un
+    /// nombre entre ellas.
+    /// </summary>
+    public override string ToString() =>
+        $"{nameof(SolicitudPendienteDelEquipo)} {{ Id = {Id}, EmpleadoId = {EmpleadoId} }}";
+}
+
+/// <summary>
 /// Alta de una solicitud de vacaciones y listado de las propias: las dos reglas de dominio de FEAT-001a.
 /// </summary>
 /// <remarks>
@@ -836,6 +874,84 @@ public sealed class SolicitudesService
                 solicitud.FechaCreacion,
                 solicitud.ResueltoPorId,
                 solicitud.MotivoDeRechazo))
+            .ToListAsync(cancelacion)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Las solicitudes <c>Pendientes</c> de los empleados bajo la autoridad de quien consulta —su
+    /// equipo si es manager, el de su manager si es el designado—, ordenadas de forma
+    /// <b>ascendente</b> por fecha de creación: la que más tiempo lleva esperando, primero. FEAT-002
+    /// (Bloque 4, FR-05, AC-07).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Quién tiene autoridad sobre quién lo decide <see cref="PermisosService"/></b>
+    /// (<c>AGENTS.md</c>): este método le pregunta a
+    /// <see cref="PermisosService.EmpleadosBajoAutoridadDeAsync"/> y filtra exactamente sobre esa
+    /// respuesta, sin repetir la regla del organigrama.
+    /// </para>
+    /// <para>
+    /// <b>Equipo vacío → <c>[]</c> sin abrir ningún contexto de <c>Solicitud</c></b>, mismo criterio
+    /// que <see cref="SaldoService.DeLosAniosAsync"/> con lista vacía: cada viaje a la base corresponde
+    /// a una pregunta real, y sin equipo no hay ninguna solicitud que pueda calificar.
+    /// </para>
+    /// <para>
+    /// <b>El <c>join</c> con <c>Empleado</c> es explícito y nunca <c>.Include()</c></b> —mitigación de
+    /// la parte de <i>Information Disclosure</i> de R-22—: trae únicamente <c>Nombre</c>, la única vez
+    /// que ese campo viaja fuera de la propia persona (ver el remarks de
+    /// <see cref="SolicitudPendienteDelEquipo"/>), nunca <c>Correo</c> ni el resto de la fila.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Si no hay empleado actual resuelto —la excepción viene de
+    /// <see cref="PermisosService.EmpleadosBajoAutoridadDeAsync"/> y <b>se propaga</b>: no se degrada
+    /// a una lista vacía, que se leería como «tu equipo no tiene pendientes» (mismo criterio que
+    /// <see cref="ListarPropiasAsync"/>).
+    /// </exception>
+    /// <exception cref="DbUpdateException">
+    /// Si falla la persistencia al listar las solicitudes. Se propaga sin <c>catch</c>, mismo criterio
+    /// que el resto de este servicio.
+    /// </exception>
+    public async Task<IReadOnlyList<SolicitudPendienteDelEquipo>> ListarPendientesDelEquipoAsync(
+        CancellationToken cancelacion = default)
+    {
+        var quienConsulta = _empleadoActual.Identidad;
+
+        var equipo = await _permisos.EmpleadosBajoAutoridadDeAsync(quienConsulta, cancelacion)
+            .ConfigureAwait(false);
+
+        if (equipo.Count == 0)
+        {
+            // Respuesta legítima de quien no tiene autoridad sobre nadie: no es un error, y no amerita
+            // abrir un contexto para preguntarle a una tabla que ya sabemos que no puede tener nada que
+            // calificar.
+            return [];
+        }
+
+        await using var contexto = await _fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
+
+        return await contexto.Solicitudes
+            .AsNoTracking()
+            .Where(solicitud => equipo.Contains(solicitud.EmpleadoId)
+                && solicitud.Estado == EstadoSolicitud.Pendiente)
+            .Join(
+                contexto.Empleados.AsNoTracking(),
+                solicitud => solicitud.EmpleadoId,
+                empleado => empleado.Id,
+                (solicitud, empleado) => new { Solicitud = solicitud, empleado.Nombre })
+            // El orden se aplica ANTES de proyectar a SolicitudPendienteDelEquipo: EF Core no puede
+            // traducir un OrderBy que lea la propiedad de un record recién construido en el propio
+            // resultSelector, así que acá todavía ordena sobre las columnas del tipo anónimo intermedio.
+            .OrderBy(par => par.Solicitud.FechaCreacion)
+            .Select(par => new SolicitudPendienteDelEquipo(
+                par.Solicitud.Id,
+                par.Solicitud.EmpleadoId,
+                par.Nombre,
+                par.Solicitud.FechaInicio,
+                par.Solicitud.FechaFin,
+                par.Solicitud.DiasCorridos,
+                par.Solicitud.FechaCreacion))
             .ToListAsync(cancelacion)
             .ConfigureAwait(false);
     }
