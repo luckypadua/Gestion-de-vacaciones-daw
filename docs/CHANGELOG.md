@@ -91,8 +91,39 @@ Registro de los cambios de la **aplicación**. El formato sigue
 Con FEAT-001c cierran las tres reglas de negocio de PRD-001 sobre solicitudes de vacaciones: fechas
 válidas, tope anual y no superposición.
 
+- **FEAT-002 — Aprobación y rechazo de solicitudes por el manager.** El manager —o el designado en
+  quien delega— aprueba o rechaza las solicitudes `Pendientes` de su equipo, con trazabilidad
+  completa de quién resolvió, cuándo y por qué.
+
+  - **`Solicitud` gana tres columnas** (`ResueltoPorId`, `FechaResolucion`, `MotivoDeRechazo`)
+    respaldadas por una quinta *check constraint*: una fila `Pendiente` con datos de resolución, o
+    una `Aprobada`/`Rechazada` sin ellos, es imposible de persistir.
+  - **`PermisosService` gana el organigrama**, separando explícitamente dos preguntas que el PRD
+    trata como relacionadas pero no son la misma: quién puede *ver* una solicitud ajena (el
+    titular, su manager, el designado de su manager) y quién puede *resolverla* (manager o
+    designado únicamente — la autoaprobación no está permitida, ni siquiera ante un dato de
+    organigrama anómalo). Las consultas nunca traen nombre ni correo del equipo, solo los
+    identificadores necesarios para decidir.
+  - **`SolicitudesService.ResolverAsync`** aprueba o rechaza dentro de una transacción serializable,
+    con el mismo reintento dirigido que FEAT-001c ya usa para su propia carrera de concurrencia: dos
+    resoluciones simultáneas de la misma solicitud terminan siempre en una aplicada y la otra
+    informada como ya resuelta, nunca en una excepción cruda.
+  - **Listado de pendientes del equipo**, ordenado por antigüedad (la que más tiempo lleva
+    esperando, primero), que no consulta la base cuando quien pregunta no tiene autoridad sobre
+    nadie.
+  - **Pantalla de autorizaciones**, alcanzable por un link que solo aparece para quien tiene equipo
+    a cargo — la decisión sale siempre del dominio, nunca de una consulta propia del componente. El
+    motivo de un rechazo se muestra siempre como texto plano, nunca interpretado.
+
+  15 tests nuevos sobre los 284 de FEAT-001a+b+c (338 en total), cobertura del 96,29% en líneas y
+  93,28% en ramas. SAST PASSED, 0 vulnerabilidades Critical/High/Medium (1 hallazgo LOW no
+  bloqueante, documentado y sin corregir en esta entrega).
+
+Con FEAT-002 quedan completos los tres requisitos funcionales de PRD-001 que no entraban en
+FEAT-001: aprobar, rechazar y listar las solicitudes pendientes del equipo.
+
 ### Fuera de alcance de esta entrega
 
-La aprobación o rechazo por parte del manager. La verificación de carga —p95 < 3 s con 50
-concurrentes— queda diferida a un ticket de performance propio; FEAT-001b y FEAT-001c entregan la
-condición estructural (los índices), no la medición.
+Las notificaciones al empleado cuando su solicitud se resuelve. La verificación de carga —p95 < 3 s
+con 50 concurrentes— queda diferida a un ticket de performance propio; FEAT-001b, FEAT-001c y
+FEAT-002 entregan la condición estructural (los índices), no la medición.
