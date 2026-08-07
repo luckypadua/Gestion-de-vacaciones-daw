@@ -121,8 +121,65 @@ public sealed class ResultadoDelAlta
 }
 
 /// <summary>
+/// Qué pasó al intentar resolver (aprobar o rechazar) una solicitud: o la resolución se aplicó, o se
+/// rechazó con un motivo. Nunca las dos cosas y nunca ninguna.
+/// </summary>
+/// <remarks>
+/// FEAT-002 (Bloque 3). Mismo carácter que <see cref="ResultadoDelAlta"/>: el motivo vacío en un rechazo
+/// (AC-03) y la solicitud que ya no está <c>Pendiente</c> (AC-04) son respuestas previstas, no fallos del
+/// sistema —así que tampoco viajan como excepción—, mientras que la denegación de acceso (AC-08) y un
+/// fallo real de persistencia sí se propagan tal cual.
+/// </remarks>
+public sealed class ResultadoDeLaResolucion
+{
+    private ResultadoDeLaResolucion(bool fueResuelta, string mensajeDeError)
+    {
+        FueResuelta = fueResuelta;
+        MensajeDeError = mensajeDeError;
+    }
+
+    /// <summary>¿Se aplicó la resolución pedida (aprobación o rechazo)?</summary>
+    public bool FueResuelta { get; }
+
+    /// <summary>
+    /// Mensaje literal del PRD que hay que mostrarle a quien resuelve, o cadena vacía si la resolución
+    /// se aplicó.
+    /// </summary>
+    public string MensajeDeError { get; }
+
+    /// <summary>
+    /// La resolución se aplicó: la solicitud pasó a <c>Aprobada</c> o a <c>Rechazada</c>, según lo
+    /// pedido.
+    /// </summary>
+    public static ResultadoDeLaResolucion Resuelta() =>
+        new(fueResuelta: true, mensajeDeError: string.Empty);
+
+    /// <summary>La resolución se rechazó por <paramref name="mensajeDeError"/>, que es un literal del PRD.</summary>
+    /// <exception cref="ArgumentException">
+    /// Si el mensaje está en blanco: un rechazo sin motivo dejaría a quien resuelve sin saber qué
+    /// corregir.
+    /// </exception>
+    public static ResultadoDeLaResolucion Rechazada(string mensajeDeError)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mensajeDeError);
+
+        return new ResultadoDeLaResolucion(fueResuelta: false, mensajeDeError);
+    }
+
+    /// <summary>
+    /// Descripción para diagnóstico: sin ningún dato de la persona (R-12), mismo criterio que
+    /// <see cref="ResultadoDelAlta.ToString"/>.
+    /// </summary>
+    public override string ToString() =>
+        FueResuelta
+            ? $"{nameof(ResultadoDeLaResolucion)} {{ FueResuelta = true }}"
+            : $"{nameof(ResultadoDeLaResolucion)} {{ rechazada: {MensajeDeError} }}";
+}
+
+/// <summary>
 /// Solicitud tal como la necesita el listado propio de AC-05: el período, sus días corridos, su estado
-/// actual y cuándo se creó.
+/// actual, cuándo se creó y —desde FEAT-002 (Bloque 3, AC-06)— quién la resolvió y, si fue un rechazo,
+/// el motivo.
 /// </summary>
 /// <remarks>
 /// Es una proyección y no la entidad <c>Solicitud</c>, por el mismo motivo que <c>EmpleadoDeLaNomina</c>:
@@ -137,7 +194,9 @@ public sealed record SolicitudDelListado(
     DateOnly FechaFin,
     int DiasCorridos,
     EstadoSolicitud Estado,
-    DateTimeOffset FechaCreacion)
+    DateTimeOffset FechaCreacion,
+    int? ResueltoPorId,
+    string? MotivoDeRechazo)
 {
     /// <summary>
     /// Descripción para diagnóstico: identificadores y estado, sin el período.
@@ -577,6 +636,159 @@ public sealed class SolicitudesService
     }
 
     /// <summary>
+    /// Aprueba o rechaza una solicitud <c>Pendiente</c> (FEAT-002, Bloque 3: FR-01 a FR-04).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Quien resuelve sale de <see cref="IEmpleadoActualProvider"/> y nunca de un parámetro</b>
+    /// (mitigación de R-13), mismo patrón que <see cref="CrearAsync"/>.
+    /// </para>
+    /// <para>
+    /// <b>El orden es parte del contrato, y es observable.</b> Primero el motivo vacío en un rechazo
+    /// (AC-03) — <i>sin abrir contexto</i>, porque no hace falta mirar la base para saber que se impide.
+    /// Recién entonces se abre la transacción <c>Serializable</c> y se lee la solicitud: si no existe,
+    /// <see cref="ArgumentException"/> — no es un caso de negocio del PRD, es un identificador que no
+    /// existe, misma familia que el período invertido de <c>ImputacionPorAnio</c>. Después,
+    /// <see cref="PermisosService.ExigirPoderResolverLasSolicitudesDeAsync"/> — <b>única sede</b> de la
+    /// decisión (<c>AGENTS.md</c>): si niega, la excepción se propaga tal cual, nunca se convierte en un
+    /// rechazo, porque es un 403 y no una validación de negocio (AC-08). Solo entonces se mira el estado:
+    /// si ya no es <c>Pendiente</c>, se hace <i>rollback</i> y se rechaza con el literal de AC-04. Si pasa
+    /// todo, se escribe <c>Estado</c>/<c>ResueltoPorId</c>/<c>FechaResolucion</c>/<c>MotivoDeRechazo</c> y
+    /// se commitea.
+    /// </para>
+    /// <para>
+    /// <b>El reintento dirigido (R-25, mismo mecanismo que C14/R-16 de FEAT-001c).</b> Todo el tramo de la
+    /// transacción —<see cref="IntentarResolverAsync"/>— queda envuelto en la misma captura de
+    /// <see cref="SqlException"/> con <see cref="SqlException.Number"/> igual a
+    /// <see cref="CodigoDeConflictoDeSerializacion"/> que ya usa <see cref="CrearAsync"/>. Al capturarlo
+    /// se abre una transacción <b>nueva</b> y se relee <b>solo</b> el estado actual: si ya no es
+    /// <c>Pendiente</c> —alguien ganó la carrera—, mismo rechazo de AC-04; si sigue <c>Pendiente</c>, el
+    /// conflicto no era una carrera de resolución y la excepción <b>original</b> se repropaga tal cual, sin
+    /// convertir (R-16).
+    /// </para>
+    /// </remarks>
+    /// <param name="solicitudId">La solicitud a resolver.</param>
+    /// <param name="aprobar"><c>true</c> para aprobarla, <c>false</c> para rechazarla.</param>
+    /// <param name="motivo">
+    /// Motivo del rechazo. Obligatorio (no vacío ni en blanco) cuando <paramref name="aprobar"/> es
+    /// <c>false</c> (AC-03); se ignora cuando es <c>true</c>, una aprobación no lleva motivo.
+    /// </param>
+    /// <exception cref="ArgumentException">Si <paramref name="solicitudId"/> no existe.</exception>
+    /// <exception cref="AccesoASolicitudesDenegadoException">
+    /// Si quien actúa no es el manager de la solicitud, ni el designado de su manager (FR-06, AC-08). Se
+    /// propaga tal cual: no es una validación de negocio, es una denegación de acceso.
+    /// </exception>
+    /// <exception cref="DbUpdateException">
+    /// Si falla la persistencia. Se propaga a propósito, sin convertirse en un rechazo (mismo criterio
+    /// que <see cref="CrearAsync"/>).
+    /// </exception>
+    public async Task<ResultadoDeLaResolucion> ResolverAsync(
+        int solicitudId,
+        bool aprobar,
+        string? motivo,
+        CancellationToken cancelacion = default)
+    {
+        var quienActua = _empleadoActual.Identidad;
+
+        // AC-03, y antes de abrir cualquier contexto: un rechazo sin motivo no necesita mirar la base
+        // para saber que se impide.
+        if (!aprobar && string.IsNullOrWhiteSpace(motivo))
+        {
+            return ResultadoDeLaResolucion.Rechazada(ErroresDeSolicitud.MotivoDeRechazoObligatorio);
+        }
+
+        try
+        {
+            return await IntentarResolverAsync(solicitudId, aprobar, motivo, quienActua, cancelacion)
+                .ConfigureAwait(false);
+        }
+        catch (Exception excepcion) when (EsConflictoDeSerializacion(excepcion))
+        {
+            // R-25, mismo mecanismo que C14 de FEAT-001c: transacción NUEVA, sobre un contexto nuevo
+            // (NFR-05), y se relee SOLO el estado actual.
+            await using var contextoDeReintento =
+                await _fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
+            await using var transaccionDeReintento = await contextoDeReintento.Database
+                .BeginTransactionAsync(IsolationLevel.Serializable, cancelacion)
+                .ConfigureAwait(false);
+
+            var estadoActual = await contextoDeReintento.Solicitudes
+                .AsNoTracking()
+                .Where(solicitud => solicitud.Id == solicitudId)
+                .Select(solicitud => (EstadoSolicitud?)solicitud.Estado)
+                .SingleOrDefaultAsync(cancelacion)
+                .ConfigureAwait(false);
+
+            await transaccionDeReintento.RollbackAsync(cancelacion).ConfigureAwait(false);
+
+            if (estadoActual is not null && estadoActual != EstadoSolicitud.Pendiente)
+            {
+                // Alguien ganó la carrera: mismo rechazo de AC-04 que el camino directo.
+                return ResultadoDeLaResolucion.Rechazada(ErroresDeSolicitud.SolicitudYaResuelta);
+            }
+
+            // El conflicto NO era una carrera de resolución: se repropaga la excepción ORIGINAL, sin
+            // convertir (mismo criterio que R-16 en CrearAsync).
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// El tramo completo de la transacción de <see cref="ResolverAsync"/>: leer la solicitud, exigir el
+    /// permiso, comprobar el estado y, si corresponde, escribir. Separado en su propio método para que el
+    /// <c>catch</c> del reintento dirigido (R-25) envuelva exactamente este tramo, igual que
+    /// <see cref="CrearAsync"/> hace con el suyo.
+    /// </summary>
+    private async Task<ResultadoDeLaResolucion> IntentarResolverAsync(
+        int solicitudId,
+        bool aprobar,
+        string? motivo,
+        IdentidadDelEmpleado quienActua,
+        CancellationToken cancelacion)
+    {
+        await using var contexto = await _fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
+        await using var transaccion = await contexto.Database
+            .BeginTransactionAsync(IsolationLevel.Serializable, cancelacion)
+            .ConfigureAwait(false);
+
+        var solicitud = await contexto.Solicitudes
+            .SingleOrDefaultAsync(candidata => candidata.Id == solicitudId, cancelacion)
+            .ConfigureAwait(false);
+
+        if (solicitud is null)
+        {
+            // No es un AC del PRD: es un identificador que no existe, precondición incumplida del
+            // llamador — misma familia que el período invertido de ImputacionPorAnio. La transacción se
+            // deshace al salir de este método (await using), sin necesidad de un rollback explícito.
+            throw new ArgumentException(
+                $"No existe ninguna solicitud con el identificador {solicitudId}.", nameof(solicitudId));
+        }
+
+        // Única sede de la decisión (Block 2, AGENTS.md). Si niega, la excepción se propaga TAL CUAL: es
+        // un 403, no una validación de negocio, así que no se convierte en Rechazada (AC-08).
+        await _permisos
+            .ExigirPoderResolverLasSolicitudesDeAsync(quienActua, solicitud.EmpleadoId, cancelacion)
+            .ConfigureAwait(false);
+
+        if (solicitud.Estado != EstadoSolicitud.Pendiente)
+        {
+            await transaccion.RollbackAsync(cancelacion).ConfigureAwait(false);
+
+            return ResultadoDeLaResolucion.Rechazada(ErroresDeSolicitud.SolicitudYaResuelta);
+        }
+
+        solicitud.Estado = aprobar ? EstadoSolicitud.Aprobada : EstadoSolicitud.Rechazada;
+        solicitud.ResueltoPorId = quienActua.Id;
+        solicitud.FechaResolucion = _tiempo.GetLocalNow();
+        solicitud.MotivoDeRechazo = aprobar ? null : motivo;
+
+        await contexto.SaveChangesAsync(cancelacion).ConfigureAwait(false);
+        await transaccion.CommitAsync(cancelacion).ConfigureAwait(false);
+
+        return ResultadoDeLaResolucion.Resuelta();
+    }
+
+    /// <summary>
     /// Las solicitudes del empleado actual, ordenadas de forma descendente por fecha de creación, cada una
     /// con su estado (FR-04, AC-05).
     /// </summary>
@@ -621,7 +833,9 @@ public sealed class SolicitudesService
                 solicitud.FechaFin,
                 solicitud.DiasCorridos,
                 solicitud.Estado,
-                solicitud.FechaCreacion))
+                solicitud.FechaCreacion,
+                solicitud.ResueltoPorId,
+                solicitud.MotivoDeRechazo))
             .ToListAsync(cancelacion)
             .ConfigureAwait(false);
     }

@@ -61,6 +61,19 @@ public static class ErroresDeSolicitud
         "Ya tenés una solicitud que se superpone con estas fechas";
 
     /// <summary>
+    /// FEAT-002 AC-03. Literal del PRD: no se reformula, no se le agrega puntuación. Lo devuelve
+    /// <see cref="SolicitudesService.ResolverAsync"/> cuando se intenta rechazar sin indicar un motivo.
+    /// </summary>
+    public const string MotivoDeRechazoObligatorio = "Indicá el motivo del rechazo";
+
+    /// <summary>
+    /// FEAT-002 AC-04. Literal del PRD: no se reformula, no se le agrega puntuación. Lo devuelve
+    /// <see cref="SolicitudesService.ResolverAsync"/> cuando la solicitud ya no está en estado
+    /// <c>Pendiente</c> —por el camino directo o por el reintento de R-25—.
+    /// </summary>
+    public const string SolicitudYaResuelta = "Esta solicitud ya fue resuelta";
+
+    /// <summary>
     /// FEAT-001b AC-02, con el saldo del único año afectado. Literal del PRD, donde el marcador se
     /// escribe <c>X</c>.
     /// </summary>

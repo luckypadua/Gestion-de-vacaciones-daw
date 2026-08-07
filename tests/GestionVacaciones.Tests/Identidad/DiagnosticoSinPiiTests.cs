@@ -93,7 +93,11 @@ public sealed class DiagnosticoSinPiiTests
             FechaFin: new DateOnly(2027, 3, 29),
             DiasCorridos: 13,
             Estado: EstadoSolicitud.Pendiente,
-            FechaCreacion: new DateTimeOffset(2027, 1, 8, 10, 30, 0, TimeSpan.FromHours(-3)));
+            FechaCreacion: new DateTimeOffset(2027, 1, 8, 10, 30, 0, TimeSpan.FromHours(-3)),
+            // FEAT-002 (Bloque 3): campos nuevos de la resolución. Esta solicitud sigue Pendiente, así
+            // que los dos son null -- el mismo estado que exige CK_Solicitud_ResolucionCoherente.
+            ResueltoPorId: null,
+            MotivoDeRechazo: null);
 
         var descripcion = solicitud.ToString();
 

@@ -95,7 +95,10 @@ public sealed class ListadoDeSolicitudesTests : ContextoDeComponentes
         DateOnly fin,
         EstadoSolicitud estado,
         DateTimeOffset creacion) =>
-        new(id, EmpleadoDeLasSolicitudes, inicio, fin, CalculadorDeDiasCorridos.Contar(inicio, fin), estado, creacion);
+        // FEAT-002 (Bloque 3): ResueltoPorId/MotivoDeRechazo no son lo que este archivo verifica --
+        // eso es de MisSolicitudesTests, en el Bloque 5 -- así que van en null.
+        new(id, EmpleadoDeLasSolicitudes, inicio, fin, CalculadorDeDiasCorridos.Contar(inicio, fin), estado,
+            creacion, ResueltoPorId: null, MotivoDeRechazo: null);
 
     private const int EmpleadoDeLasSolicitudes = 7;
 }
