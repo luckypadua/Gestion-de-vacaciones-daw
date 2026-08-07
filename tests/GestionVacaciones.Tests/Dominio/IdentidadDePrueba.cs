@@ -41,4 +41,15 @@ internal sealed class IdentidadDePrueba : IEmpleadoActualProvider
         throw new NotSupportedException(
             "Los tests del dominio no cambian la identidad del circuito: la declaran al construir el " +
             "proveedor. Cambiarla es competencia del Bloque 4 y sus tests la cubren allá.");
+
+    /// <summary>
+    /// Requerido para seguir implementando la interfaz (FIX-001). Nunca se dispara, mismo motivo que
+    /// <see cref="SeleccionarAsync"/>: esta clase no cambia de identidad. Accesores explícitos y
+    /// vacíos, no un evento de campo, para no dejar <c>CS0067</c> con <c>TreatWarningsAsErrors</c>.
+    /// </summary>
+    public event EventHandler? IdentidadCambiada
+    {
+        add { }
+        remove { }
+    }
 }

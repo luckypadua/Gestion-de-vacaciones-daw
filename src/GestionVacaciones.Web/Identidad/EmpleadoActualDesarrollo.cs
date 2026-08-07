@@ -64,6 +64,9 @@ public sealed class EmpleadoActualDesarrollo : IEmpleadoActualProvider
     /// </summary>
     public IdentidadDelEmpleado Identidad => _identidad;
 
+    /// <inheritdoc/>
+    public event EventHandler? IdentidadCambiada;
+
     /// <summary>
     /// Cambia el empleado del circuito si el identificador existe en la nómina. Si no existe, <b>se
     /// conserva el anterior</b>: vaciar la identidad ante una entrada inválida le cambiaría el sujeto
@@ -81,6 +84,7 @@ public sealed class EmpleadoActualDesarrollo : IEmpleadoActualProvider
         }
 
         _identidad = IdentidadDelEmpleado.De(empleadoId);
+        IdentidadCambiada?.Invoke(this, EventArgs.Empty);
 
         return ResultadoDeSeleccion.Seleccionado;
     }
