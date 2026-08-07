@@ -220,6 +220,35 @@ public sealed class AutorizacionesTests : ContextoDeComponentes
     }
 
     [Fact]
+    public void Si_TieneEquipoACargoAsync_falla_el_link_no_aparece_y_el_resto_del_layout_sigue_en_pie()
+    {
+        // Hallazgo 1 de VERIFY (NFR-01): el catch de MainLayout.OnInitializedAsync alrededor de
+        // TieneEquipoACargoAsync no tenía ninguna ejecución. Misma fábrica que fuerza el fallo en
+        // Si_el_listado_falla_se_ve_un_estado_de_error_distinguible: TieneEquipoACargoAsync llega a
+        // PermisosService.EmpleadosBajoAutoridadDeAsync, que abre un contexto y encuentra la fábrica
+        // que revienta.
+        Services.AddSingleton<TimeProvider>(_tiempo);
+        Services.AddSingleton<IDbContextFactory<VacacionesDbContext>>(new FabricaQueNadieDebeUsar());
+        Services.AddSingleton<IEmpleadoActualProvider>(IdentidadDePrueba.De(1));
+        Services.AddSingleton<PermisosService>();
+        Services.AddSingleton<SaldoService>();
+        Services.AddSingleton<SolicitudesService>();
+
+        var layout = Render<MainLayout>(parametros => parametros.Add(pantalla => pantalla.Body, ContenidoDePrueba));
+
+        layout.WaitForState(() => EstadoDelMenu(layout) == MainLayout.EstadoListo, TimeSpan.FromSeconds(10));
+
+        // El link no aparece: la duda ante un fallo real no lleva a nadie a una pantalla que el
+        // servidor de todos modos le va a negar.
+        Assert.Empty(layout.FindAll($"[data-testid='{MainLayout.IdDelLinkDeAutorizaciones}']"));
+
+        // Y el resto del layout sigue en pie -- @Body, el contenido de prueba --: el catch no tumba la
+        // pantalla completa.
+        Assert.Contains("contenido de prueba", layout.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain(FabricaQueNadieDebeUsar.Marca, layout.Markup, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Si_resolver_falla_se_muestra_el_mensaje_sin_romper_la_pantalla()
     {
         _baseDeDatos.SaltearSiNoEstaDisponible();
@@ -254,6 +283,49 @@ public sealed class AutorizacionesTests : ContextoDeComponentes
             pagina.Find($"[data-testid='{Autorizaciones.IdDelErrorDeResolucion}']").TextContent.Trim());
 
         // El resto de la pantalla sigue en pie: el título y el estado no cayeron al error genérico.
+        Assert.Contains("Autorizaciones", pagina.Markup, StringComparison.Ordinal);
+        Assert.NotEqual(Autorizaciones.EstadoError, EstadoDeLaPantalla(pagina));
+    }
+
+    [Fact]
+    public async Task Si_resolver_lanza_una_excepcion_real_se_muestra_el_mensaje_generico_sin_romper_la_pantalla()
+    {
+        // Hallazgo 2 de VERIFY: el catch (Exception) genérico de Autorizaciones.ResolverAsync no tenía
+        // ninguna ejecución. El test de arriba ejercita el camino de rechazo de NEGOCIO
+        // (FueResuelta = false, "SolicitudYaResuelta"); este fuerza una EXCEPCIÓN real de verdad.
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+
+        await using var manager = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var subordinado = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await AsignarManagerAsync(subordinado.Id, manager.Id);
+        await SembrarPendienteAsync(subordinado.Id, new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 3));
+
+        RegistrarComoQuienResuelve(manager.Id);
+
+        var pagina = Render<Autorizaciones>();
+        pagina.WaitForState(
+            () => EstadoDeLaPantalla(pagina) == Autorizaciones.EstadoListado, TimeSpan.FromSeconds(10));
+
+        // La solicitud desaparece de la base justo antes del clic -- la fila en pantalla queda vieja a
+        // propósito, con un Id que ResolverAsync ya no va a encontrar. SolicitudesService.ResolverAsync
+        // lanza ArgumentException desde IntentarResolverAsync, que no es un rechazo modelado por
+        // ResultadoDeLaResolucion: es la excepción real que el catch genérico tiene que atrapar.
+        await using (var contexto = _baseDeDatos.CrearContexto())
+        {
+            var solicitud = await contexto.Solicitudes
+                .SingleAsync(candidata => candidata.EmpleadoId == subordinado.Id, Cancelacion);
+            contexto.Solicitudes.Remove(solicitud);
+            await contexto.SaveChangesAsync(Cancelacion);
+        }
+
+        await pagina.Find($"[data-testid='{Autorizaciones.IdDelBotonDeAprobar}']").ClickAsync(new MouseEventArgs());
+
+        Assert.Equal(
+            Autorizaciones.MensajeDeFalloAlResolver,
+            pagina.Find($"[data-testid='{Autorizaciones.IdDelErrorDeResolucion}']").TextContent.Trim());
+
+        // El resto de la pantalla sigue en pie: el título no cayó y el estado no se convirtió en el
+        // error genérico del listado, que significa otra cosa.
         Assert.Contains("Autorizaciones", pagina.Markup, StringComparison.Ordinal);
         Assert.NotEqual(Autorizaciones.EstadoError, EstadoDeLaPantalla(pagina));
     }

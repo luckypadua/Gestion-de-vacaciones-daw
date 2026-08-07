@@ -8,16 +8,26 @@
 | Modelo de amenazas | `docs/daw/security/threat-FEAT-002.md` |
 | Catálogo de reglas | `.daw/rules/validation-rules.instructions.md` §3/§4 |
 | Fecha | 2026-08-07 |
-| Ejecuciones | 1 · cierre de CODE |
+| Ejecuciones | 2 · cierre de CODE + recierre tras bucle correctivo de VERIFY |
 | Resultado | **PASSED** |
 
 ## Alcance
 
-El delta completo del ticket, diff `6d681b0..HEAD` (5 commits): esquema (`Solicitud.cs`,
-`VacacionesDbContext.cs`, migración `ColumnasDeResolucion`), `PermisosService.cs`,
+**Ejecución 1** — el delta completo del ticket, diff `6d681b0..HEAD` (5 commits): esquema
+(`Solicitud.cs`, `VacacionesDbContext.cs`, migración `ColumnasDeResolucion`), `PermisosService.cs`,
 `SolicitudesService.cs`, `ErroresDeSolicitud.cs`, `Autorizaciones.razor`, `MainLayout.razor`,
 `ListadoDeSolicitudes.razor`, más los archivos de test del ticket. Ningún `.csproj` fue tocado: 0
 dependencias nuevas.
+
+**Ejecución 2** (recierre) — el delta agregado por el bucle correctivo VERIFY→CODE
+(F-VER-03/NFR-01 + 2 WARN): solo `AutorizacionesTests.cs` y `DiagnosticoSinPiiTests.cs`, 4 tests
+nuevos que cierran huecos de cobertura sobre código ya escaneado en la ejecución 1 (el `catch` de
+`MainLayout.razor`, el `catch` de `Autorizaciones.ResolverAsync` y los `ToString()` de
+`ResultadoDeLaResolucion`/`SolicitudPendienteDelEquipo`). Ningún archivo de producción ni `.csproj`
+cambió. `git diff --stat -- '*.csproj'`: vacío. Secretos, SQL crudo y `MarkupString`:
+`grep -iE "password|secret|apikey|connectionstring|token"` / `grep "FromSqlRaw|ExecuteSqlRaw"` /
+`grep MarkupString` sobre el delta: 0 apariciones en los tres. `dotnet list ... --vulnerable
+--include-transitive`: 0 paquetes vulnerables en los 3 proyectos.
 
 ---
 
@@ -130,4 +140,18 @@ seguridad, para un ticket futuro o un ajuste menor si se quiere cerrar antes de 
 - `src/GestionVacaciones.Web/Components/Solicitudes/ListadoDeSolicitudes.razor`
 - `docs/daw/security/threat-FEAT-002.md` (referencia)
 
-**Verdicto final: SECURE / PASSED — gate SAST desbloqueado, 0 Critical/High/Medium, 1 LOW no bloqueante.**
+**Verdicto final ejecución 1: SECURE / PASSED — gate SAST desbloqueado, 0 Critical/High/Medium, 1 LOW no bloqueante.**
+
+---
+
+## Ejecución 2 — recierre tras bucle correctivo (2026-08-07)
+
+El bucle correctivo VERIFY→CODE (F-VER-03/NFR-01: `MainLayout.razor` bajo el 80% exigido por
+NFR-01, más 2 WARN de cobertura) se resolvió agregando 4 tests — sin tocar ningún archivo de
+producción. Las 15 categorías del protocolo (F-SAST-01 a F-SAST-17) se re-evaluaron sobre el nuevo
+delta (ver "Alcance" arriba): todas limpias o sin superficie, igual que en la ejecución 1. El único
+hallazgo LOW (motivo de rechazo sin límite de longitud explícito, `Autorizaciones.razor:76-82` /
+`SolicitudesService.cs:821`) sigue abierto sin cambios — no forma parte de este bucle correctivo y
+sigue sin bloquear el gate.
+
+**Verdicto final ejecución 2: SECURE / PASSED — gate SAST desbloqueado, 0 Critical/High/Medium, 1 LOW no bloqueante (sin cambios respecto a la ejecución 1).**
