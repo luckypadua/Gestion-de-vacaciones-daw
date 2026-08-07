@@ -1,6 +1,8 @@
 using System.Globalization;
 using GestionVacaciones.Data.Services;
 using GestionVacaciones.Tests.Andamiaje;
+using GestionVacaciones.Tests.Persistencia;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace GestionVacaciones.Tests.Dominio;
@@ -16,13 +18,27 @@ namespace GestionVacaciones.Tests.Dominio;
 /// regla sea corta no la vuelve prescindible; la vuelve el único lugar donde va a crecer.
 /// </para>
 /// <para>
-/// Ninguno de estos casos toca la base: decidir si alguien puede ver un listado no es una consulta.
+/// Los casos de FEAT-001a no tocan la base: decidir si alguien puede ver un listado no es una consulta.
+/// Los de FEAT-002 (Bloque 2), agregados acá, sí la necesitan —afirman sobre el resultado de consultar
+/// el organigrama real—, así que la clase pasa a integrar <see cref="ColeccionDeBaseDeDatos"/>. El trait
+/// de integración se aplica a <b>nivel de clase</b> y no por método: <c>CategoriaDeIntegracionTests</c>
+/// decide quién usa la base por el tipo del fixture que recibe la clase, no caso por caso, así que los
+/// cinco casos de FEAT-001a que no tocan la base quedan igual bajo el filtro que los seis de
+/// <c>AltaDeSolicitudTests</c> que usan <c>FabricaQueNadieDebeUsar</c> sin abrir conexión.
 /// </para>
 /// </remarks>
+[Collection(ColeccionDeBaseDeDatos.Nombre)]
+[Trait(CategoriaDeTest.Clave, CategoriaDeTest.Integracion)]
 public sealed class PermisosDeVisibilidadTests
 {
     private const int Propio = 7;
     private const int Ajeno = 8;
+
+    private readonly BaseDeDatosDeTest _baseDeDatos;
+
+    public PermisosDeVisibilidadTests(BaseDeDatosDeTest baseDeDatos) => _baseDeDatos = baseDeDatos;
+
+    private static CancellationToken Cancelacion => TestContext.Current.CancellationToken;
 
     [Fact]
     public void B5_T8_Se_niega_el_listado_de_otro_empleado()
@@ -135,5 +151,90 @@ public sealed class PermisosDeVisibilidadTests
             "Estos archivos deciden negar la visibilidad de las solicitudes fuera de PermisosService: " +
             $"{string.Join(", ", infracciones)}. Esa decisión vive en un punto único (AGENTS.md); el " +
             "resto del código la consume.");
+    }
+
+    /// <summary>
+    /// FEAT-002 (FR-06, Bloque 2): además de la propia persona, el manager también puede ver las
+    /// solicitudes de su equipo.
+    /// </summary>
+    [Fact]
+    public async Task El_manager_puede_ver_las_solicitudes_de_su_equipo()
+    {
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+        await using var manager = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var subordinado = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await AsignarManagerAsync(subordinado.Id, manager.Id);
+
+        var permisos = new PermisosService(new FabricaDeLaBaseDeTest(_baseDeDatos));
+        var quienConsulta = IdentidadDelEmpleado.De(manager.Id);
+
+        Assert.True(await permisos.PuedeVerLasSolicitudesDeAsync(quienConsulta, subordinado.Id, Cancelacion));
+
+        // Y exigirlo no lanza.
+        await permisos.ExigirPoderVerLasSolicitudesDeAsync(quienConsulta, subordinado.Id, Cancelacion);
+    }
+
+    /// <summary>
+    /// FEAT-002 (FR-06, Bloque 2): el designado del manager tiene, sobre ese equipo, la misma capacidad
+    /// de ver que el propio manager.
+    /// </summary>
+    [Fact]
+    public async Task El_designado_puede_ver_las_solicitudes_del_equipo_de_su_manager()
+    {
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+        await using var manager = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var designado = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var subordinado = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await AsignarManagerYDesignadoAsync(subordinado.Id, manager.Id, designado.Id);
+
+        var permisos = new PermisosService(new FabricaDeLaBaseDeTest(_baseDeDatos));
+
+        Assert.True(await permisos.PuedeVerLasSolicitudesDeAsync(
+            IdentidadDelEmpleado.De(designado.Id), subordinado.Id, Cancelacion));
+    }
+
+    /// <summary>
+    /// Camino triste que valida FR-06/AC-08: sin ninguna relación de manager ni de designado, el acceso
+    /// se sigue negando aunque ahora la sede consulte el organigrama real.
+    /// </summary>
+    [Fact]
+    public async Task Un_empleado_sin_relacion_no_puede_ver_las_solicitudes_de_otro()
+    {
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+        await using var quienConsulta = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var ajeno = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+
+        var permisos = new PermisosService(new FabricaDeLaBaseDeTest(_baseDeDatos));
+        var identidad = IdentidadDelEmpleado.De(quienConsulta.Id);
+
+        Assert.False(await permisos.PuedeVerLasSolicitudesDeAsync(identidad, ajeno.Id, Cancelacion));
+
+        var excepcion = await Assert.ThrowsAsync<AccesoASolicitudesDenegadoException>(
+            () => permisos.ExigirPoderVerLasSolicitudesDeAsync(identidad, ajeno.Id, Cancelacion));
+
+        // R-12: los dos identificadores, nunca nombre ni correo.
+        Assert.Contains(
+            quienConsulta.Id.ToString(CultureInfo.InvariantCulture), excepcion.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            ajeno.Id.ToString(CultureInfo.InvariantCulture), excepcion.Message, StringComparison.Ordinal);
+    }
+
+    private async Task AsignarManagerAsync(int empleadoId, int managerId)
+    {
+        await using var contexto = _baseDeDatos.CrearContexto();
+        var empleado = await contexto.Empleados
+            .SingleAsync(candidato => candidato.Id == empleadoId, Cancelacion);
+        empleado.ManagerId = managerId;
+        await contexto.SaveChangesAsync(Cancelacion);
+    }
+
+    private async Task AsignarManagerYDesignadoAsync(int empleadoId, int managerId, int designadoId)
+    {
+        await using var contexto = _baseDeDatos.CrearContexto();
+        var empleado = await contexto.Empleados
+            .SingleAsync(candidato => candidato.Id == empleadoId, Cancelacion);
+        empleado.ManagerId = managerId;
+        empleado.DesignadoId = designadoId;
+        await contexto.SaveChangesAsync(Cancelacion);
     }
 }

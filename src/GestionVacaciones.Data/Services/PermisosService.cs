@@ -1,3 +1,6 @@
+using GestionVacaciones.Data.Entidades;
+using Microsoft.EntityFrameworkCore;
+
 namespace GestionVacaciones.Data.Services;
 
 /// <summary>
@@ -49,10 +52,11 @@ public sealed class AccesoASolicitudesDenegadoException : UnauthorizedAccessExce
 /// lugares antes de que nadie lo note.
 /// </para>
 /// <para>
-/// <b>No toca la base.</b> Decidir si alguien puede ver un listado no es una consulta: es una regla sobre
-/// la identidad de quien consulta y el sujeto del listado. El día que la regla necesite el organigrama
-/// —el manager y el designado ya están en el modelo— este tipo recibirá una fábrica de contextos como
-/// todos los demás (NFR-05); hoy pedirla sería declarar una dependencia que no usa.
+/// <b>La regla de FEAT-001a no toca la base:</b> decidir si alguien ve sus propias solicitudes es una
+/// comparación de identificadores, no una consulta. Desde FEAT-002 (Bloque 2) la sede también sabe
+/// responder «¿es el manager?» o «¿es el designado del manager?», y esas dos preguntas sí necesitan el
+/// organigrama (<see cref="Empleado.ManagerId"/>/<see cref="Empleado.DesignadoId"/>): de ahí el
+/// constructor sobrecargado que recibe <see cref="IDbContextFactory{TContext}"/> (NFR-05).
 /// </para>
 /// <para>
 /// <b>Fuera de alcance en FEAT-001a:</b> la vista del manager y del designado, y la denegación con 403
@@ -62,6 +66,54 @@ public sealed class AccesoASolicitudesDenegadoException : UnauthorizedAccessExce
 /// </remarks>
 public sealed class PermisosService
 {
+    /// <summary>
+    /// Fábrica de contextos para los métodos async de organigrama. <c>null</c> cuando la instancia se
+    /// construyó con el constructor de 0 parámetros (<see cref="PermisosService()"/>), que solo respalda
+    /// los métodos síncronos de FEAT-001a.
+    /// </summary>
+    private readonly IDbContextFactory<VacacionesDbContext>? _fabrica;
+
+    /// <summary>
+    /// Constructor de FEAT-001a, **sin cambios**: 21 sitios de test lo siguen usando y solo respalda los
+    /// métodos síncronos. No agrega parámetros opcionales — eso sería, en los hechos, reemplazarlo.
+    /// </summary>
+    public PermisosService()
+    {
+    }
+
+    /// <summary>
+    /// Constructor de FEAT-002 (Bloque 2), <b>sobrecarga</b> del anterior y no su reemplazo: habilita los
+    /// tres métodos async que necesitan el organigrama.
+    /// </summary>
+    /// <param name="fabrica">
+    /// Fábrica de contextos. Siempre <see cref="IDbContextFactory{TContext}"/> y nunca un
+    /// <c>DbContext</c> inyectado (<c>AGENTS.md</c>): cada método abre y cierra el suyo.
+    /// </param>
+    public PermisosService(IDbContextFactory<VacacionesDbContext> fabrica)
+    {
+        ArgumentNullException.ThrowIfNull(fabrica);
+
+        _fabrica = fabrica;
+    }
+
+    /// <summary>
+    /// La fábrica, o el error de uso que corresponde si esta instancia se construyó sin ella.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Si la instancia se construyó con <see cref="PermisosService()"/>: ese constructor no recibe
+    /// fábrica, así que llamar a un método que consulta el organigrama sobre una instancia así es un
+    /// error de uso del llamador, no un estado de negocio — se señaliza con la misma familia de
+    /// excepción que <c>SaldoService</c> usa para «operación pedida en un estado que no la admite», no
+    /// con un <c>null</c> silencioso ni con una degradación a «no autorizado».
+    /// </exception>
+    private IDbContextFactory<VacacionesDbContext> Fabrica =>
+        _fabrica ?? throw new InvalidOperationException(
+            $"{nameof(PermisosService)} se construyó con el constructor sin parámetros, que solo " +
+            "respalda los métodos síncronos de FEAT-001a. Los métodos que consultan el organigrama " +
+            $"({nameof(PuedeVerLasSolicitudesDeAsync)}, {nameof(PuedeResolverLasSolicitudesDeAsync)}, " +
+            $"{nameof(EmpleadosBajoAutoridadDeAsync)}) necesitan la fábrica de contextos: construí la " +
+            $"instancia con el constructor que recibe {nameof(IDbContextFactory<VacacionesDbContext>)}.");
+
     /// <summary>
     /// ¿Puede <paramref name="quienConsulta"/> ver las solicitudes de
     /// <paramref name="empleadoDeLasSolicitudes"/>?
@@ -104,5 +156,184 @@ public sealed class PermisosService
             $"El empleado {quienConsulta.Id} pidió las solicitudes del empleado " +
             $"{empleadoDeLasSolicitudes} y no le corresponde verlas. En FEAT-001a cada empleado ve " +
             "únicamente las propias; la vista del manager y del designado es de un ticket futuro.");
+    }
+
+    /// <summary>
+    /// ¿Puede <paramref name="quienConsulta"/> ver las solicitudes de
+    /// <paramref name="empleadoDeLasSolicitudes"/>? FEAT-002 (FR-06): además de la propia persona
+    /// (<see cref="PuedeVerLasSolicitudesDe"/>), también puede su manager y el designado de su manager.
+    /// </summary>
+    /// <remarks>
+    /// Delega la comparación de «es la propia persona» en el método síncrono existente en vez de
+    /// repetirla: la regla de FEAT-001a sigue viviendo en un único lugar.
+    /// </remarks>
+    /// <exception cref="SinEmpleadoSeleccionadoException">
+    /// Si <paramref name="quienConsulta"/> no tiene empleado seleccionado. Se resuelve antes de abrir
+    /// ningún contexto (mismo criterio que el método síncrono): no se degrada a <c>false</c>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Si esta instancia se construyó con <see cref="PermisosService()"/>, ver <see cref="Fabrica"/>.
+    /// </exception>
+    public async Task<bool> PuedeVerLasSolicitudesDeAsync(
+        IdentidadDelEmpleado quienConsulta,
+        int empleadoDeLasSolicitudes,
+        CancellationToken cancelacion = default)
+    {
+        ArgumentNullException.ThrowIfNull(quienConsulta);
+
+        if (PuedeVerLasSolicitudesDe(quienConsulta, empleadoDeLasSolicitudes))
+        {
+            return true;
+        }
+
+        return await EsManagerODesignadoDeAsync(quienConsulta.Id, empleadoDeLasSolicitudes, cancelacion)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Igual que <see cref="PuedeVerLasSolicitudesDeAsync"/>, pero <b>niega</b> en lugar de contestar.
+    /// </summary>
+    /// <exception cref="AccesoASolicitudesDenegadoException">Si no le corresponde verlas.</exception>
+    /// <exception cref="SinEmpleadoSeleccionadoException">
+    /// Si <paramref name="quienConsulta"/> no tiene empleado seleccionado.
+    /// </exception>
+    public async Task ExigirPoderVerLasSolicitudesDeAsync(
+        IdentidadDelEmpleado quienConsulta,
+        int empleadoDeLasSolicitudes,
+        CancellationToken cancelacion = default)
+    {
+        if (await PuedeVerLasSolicitudesDeAsync(quienConsulta, empleadoDeLasSolicitudes, cancelacion)
+            .ConfigureAwait(false))
+        {
+            return;
+        }
+
+        // Los dos identificadores, nunca nombre ni correo (R-12).
+        throw new AccesoASolicitudesDenegadoException(
+            $"El empleado {quienConsulta.Id} pidió las solicitudes del empleado " +
+            $"{empleadoDeLasSolicitudes} y no le corresponde verlas: no es la propia persona, ni su " +
+            "manager, ni el designado de su manager.");
+    }
+
+    /// <summary>
+    /// ¿Puede <paramref name="quienConsulta"/> <b>resolver</b> (aprobar o rechazar) las solicitudes de
+    /// <paramref name="empleadoDeLasSolicitudes"/>? FEAT-002 (FR-01, FR-02): únicamente el manager o el
+    /// designado de su manager — <b>nunca</b> la propia persona, aunque
+    /// <see cref="PuedeVerLasSolicitudesDeAsync"/> para el mismo par devuelva <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Mitigación de R-22 — el <c>self</c> se excluye como condición propia del método</b>, antes de
+    /// consultar el organigrama y no como consecuencia accidental de la consulta. Así, ni un dato
+    /// externo anómalo (<c>Empleado.ManagerId == Empleado.Id</c> del propio empleado, algo que este
+    /// ticket no escribe pero que PRD-001 declara administrado externamente) alcanzaría a autorizar la
+    /// autoaprobación: la condición de exclusión no depende de qué contesten <c>ManagerId</c>/
+    /// <c>DesignadoId</c>.
+    /// </remarks>
+    /// <exception cref="SinEmpleadoSeleccionadoException">
+    /// Si <paramref name="quienConsulta"/> no tiene empleado seleccionado. Se resuelve antes de abrir
+    /// ningún contexto: no se degrada a <c>false</c>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Si esta instancia se construyó con <see cref="PermisosService()"/>, ver <see cref="Fabrica"/>.
+    /// </exception>
+    public async Task<bool> PuedeResolverLasSolicitudesDeAsync(
+        IdentidadDelEmpleado quienConsulta,
+        int empleadoDeLasSolicitudes,
+        CancellationToken cancelacion = default)
+    {
+        ArgumentNullException.ThrowIfNull(quienConsulta);
+        var sujeto = quienConsulta.Id;
+
+        if (sujeto == empleadoDeLasSolicitudes)
+        {
+            return false;
+        }
+
+        return await EsManagerODesignadoDeAsync(sujeto, empleadoDeLasSolicitudes, cancelacion)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Igual que <see cref="PuedeResolverLasSolicitudesDeAsync"/>, pero <b>niega</b> en lugar de
+    /// contestar: es la forma que usa <c>SolicitudesService.ResolverAsync</c>, para que la negación no
+    /// pueda ignorarse por descuido.
+    /// </summary>
+    /// <exception cref="AccesoASolicitudesDenegadoException">Si no le corresponde resolverlas.</exception>
+    /// <exception cref="SinEmpleadoSeleccionadoException">
+    /// Si <paramref name="quienConsulta"/> no tiene empleado seleccionado.
+    /// </exception>
+    public async Task ExigirPoderResolverLasSolicitudesDeAsync(
+        IdentidadDelEmpleado quienConsulta,
+        int empleadoDeLasSolicitudes,
+        CancellationToken cancelacion = default)
+    {
+        if (await PuedeResolverLasSolicitudesDeAsync(quienConsulta, empleadoDeLasSolicitudes, cancelacion)
+            .ConfigureAwait(false))
+        {
+            return;
+        }
+
+        // Los dos identificadores, nunca nombre ni correo (R-12).
+        throw new AccesoASolicitudesDenegadoException(
+            $"El empleado {quienConsulta.Id} intentó resolver la solicitud del empleado " +
+            $"{empleadoDeLasSolicitudes} y no le corresponde: solo pueden resolverla su manager o el " +
+            "designado de su manager, nunca la propia persona.");
+    }
+
+    /// <summary>
+    /// Los <see cref="Empleado.Id"/> sobre los que <paramref name="quienConsulta"/> tiene autoridad: es
+    /// su manager, o es el designado de su manager. FEAT-002 (FR-05), base de
+    /// <c>SolicitudesService.ListarPendientesDelEquipoAsync</c> (Bloque 4).
+    /// </summary>
+    /// <remarks>
+    /// <b>Lista vacía si no tiene ningún equipo a cargo — no es un error</b>: es la respuesta legítima de
+    /// alguien sin autoridad sobre nadie, mismo criterio que el resto del dominio distingue «sin datos»
+    /// de «sin identidad» y de «error».
+    /// </remarks>
+    /// <exception cref="SinEmpleadoSeleccionadoException">
+    /// Si <paramref name="quienConsulta"/> no tiene empleado seleccionado. Se resuelve antes de abrir
+    /// ningún contexto: no se degrada a lista vacía, que se leería como «no tenés equipo».
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Si esta instancia se construyó con <see cref="PermisosService()"/>, ver <see cref="Fabrica"/>.
+    /// </exception>
+    public async Task<IReadOnlyList<int>> EmpleadosBajoAutoridadDeAsync(
+        IdentidadDelEmpleado quienConsulta,
+        CancellationToken cancelacion = default)
+    {
+        ArgumentNullException.ThrowIfNull(quienConsulta);
+        var sujeto = quienConsulta.Id;
+
+        await using var contexto = await Fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
+
+        // Proyección mínima (R-22, C15-I): solo el Id, nunca Nombre ni Correo.
+        return await contexto.Empleados
+            .AsNoTracking()
+            .Where(empleado => empleado.ManagerId == sujeto || empleado.DesignadoId == sujeto)
+            .Select(empleado => empleado.Id)
+            .ToListAsync(cancelacion)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// ¿<paramref name="posibleAutoridadId"/> es el manager de <paramref name="empleadoId"/>, o el
+    /// designado de su manager? Único punto que consulta el organigrama para las dos preguntas
+    /// booleanas de arriba, así que la proyección mínima (R-22) está escrita una sola vez.
+    /// </summary>
+    private async Task<bool> EsManagerODesignadoDeAsync(
+        int posibleAutoridadId, int empleadoId, CancellationToken cancelacion)
+    {
+        await using var contexto = await Fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
+
+        // Proyección mínima (R-22, C15-I): solo ManagerId y DesignadoId, nunca Nombre ni Correo.
+        var organigrama = await contexto.Empleados
+            .AsNoTracking()
+            .Where(empleado => empleado.Id == empleadoId)
+            .Select(empleado => new { empleado.ManagerId, empleado.DesignadoId })
+            .SingleOrDefaultAsync(cancelacion)
+            .ConfigureAwait(false);
+
+        return organigrama is not null
+            && (organigrama.ManagerId == posibleAutoridadId || organigrama.DesignadoId == posibleAutoridadId);
     }
 }
