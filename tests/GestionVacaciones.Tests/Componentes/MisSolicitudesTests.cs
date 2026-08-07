@@ -1,7 +1,9 @@
 using Bunit;
 using GestionVacaciones.Data;
+using GestionVacaciones.Data.Entidades;
 using GestionVacaciones.Data.Services;
 using GestionVacaciones.Tests.Dominio;
+using GestionVacaciones.Tests.Persistencia;
 using GestionVacaciones.Web.Components.Identidad;
 using GestionVacaciones.Web.Components.Pages;
 using GestionVacaciones.Web.Components.Solicitudes;
@@ -137,4 +139,109 @@ public sealed class MisSolicitudesTests : ContextoDeComponentes
 
     private static string? EstadoDeLaPantalla(IRenderedComponent<MisSolicitudes> pagina) =>
         pagina.Find($"[{MisSolicitudes.AtributoDelEstado}]").GetAttribute(MisSolicitudes.AtributoDelEstado);
+}
+
+/// <summary>
+/// FEAT-002 (Bloque 5, AC-06): la mitad de <c>MisSolicitudes</c> que necesita datos reales de una
+/// solicitud ya resuelta —no hay proveedor en memoria en la spec, mismo criterio que
+/// <c>SaldoEnPantallaConBaseDeDatosTests</c>—, así que vive en su propia clase con la instancia SQL
+/// Server del entorno.
+/// </summary>
+[Collection(ColeccionDeBaseDeDatos.Nombre)]
+[Trait(CategoriaDeTest.Clave, CategoriaDeTest.Integracion)]
+public sealed class MisSolicitudesConBaseDeDatosTests : ContextoDeComponentes
+{
+    private static readonly DateTimeOffset _instanteFijo =
+        new(2026, 8, 7, 9, 15, 0, TimeSpan.FromHours(-3));
+
+    private readonly BaseDeDatosDeTest _baseDeDatos;
+    private readonly TiempoFijo _tiempo = new(_instanteFijo);
+
+    public MisSolicitudesConBaseDeDatosTests(BaseDeDatosDeTest baseDeDatos) => _baseDeDatos = baseDeDatos;
+
+    private static CancellationToken Cancelacion => Xunit.TestContext.Current.CancellationToken;
+
+    [Fact]
+    public async Task Mis_solicitudes_muestra_quien_resolvio_y_el_motivo_del_rechazo()
+    {
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+
+        // Orden deliberado: las solicitudes de "empleado" quedan con ResueltoPorId = manager.Id (FK
+        // NoAction), así que al limpiar tiene que borrarse PRIMERO -- el await using descarta en orden
+        // inverso al de declaración, así que "empleado", declarado último, se descarta primero.
+        await using var manager = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var empleado = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+
+        const string motivo = "No hay cobertura ese día";
+
+        await SembrarResueltaAsync(
+            empleado.Id, manager.Id, new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 3),
+            EstadoSolicitud.Aprobada, motivoDeRechazo: null);
+
+        await SembrarResueltaAsync(
+            empleado.Id, manager.Id, new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 2),
+            EstadoSolicitud.Rechazada, motivoDeRechazo: motivo);
+
+        Services.AddSingleton<TimeProvider>(_tiempo);
+        Services.AddSingleton<IDbContextFactory<VacacionesDbContext>>(new FabricaDeLaBaseDeTest(_baseDeDatos));
+        Services.AddSingleton<IEmpleadoActualProvider>(IdentidadDePrueba.De(empleado.Id));
+        Services.AddSingleton<PermisosService>();
+        Services.AddSingleton<SaldoService>();
+        Services.AddSingleton<SolicitudesService>();
+        Services.AddSingleton<EmpleadosService>();
+
+        var pagina = Render<MisSolicitudes>();
+
+        pagina.WaitForState(
+            () => pagina.FindAll($"[data-testid='{ListadoDeSolicitudes.IdDeLaFila}']").Count == 2,
+            TimeSpan.FromSeconds(10));
+
+        var filas = pagina.FindAll($"[data-testid='{ListadoDeSolicitudes.IdDeLaFila}']");
+
+        var filaAprobada = filas.Single(fila =>
+            fila.QuerySelector($"[data-testid='{ListadoDeSolicitudes.IdDelEstado}']")!.TextContent.Trim()
+            == nameof(EstadoSolicitud.Aprobada));
+        var filaRechazada = filas.Single(fila =>
+            fila.QuerySelector($"[data-testid='{ListadoDeSolicitudes.IdDelEstado}']")!.TextContent.Trim()
+            == nameof(EstadoSolicitud.Rechazada));
+
+        // AC-06: quién la resolvió, visible en la aprobada.
+        var resueltoPor = filaAprobada.QuerySelector($"[data-testid='{ListadoDeSolicitudes.IdDelResueltoPor}']");
+        Assert.NotNull(resueltoPor);
+        Assert.Contains(manager.Id.ToString(), resueltoPor.TextContent, StringComparison.Ordinal);
+
+        // Y el motivo, solo en la rechazada.
+        var motivoRenderizado = filaRechazada.QuerySelector($"[data-testid='{ListadoDeSolicitudes.IdDelMotivo}']");
+        Assert.NotNull(motivoRenderizado);
+        Assert.Equal(motivo, motivoRenderizado.TextContent.Trim());
+
+        // La aprobada no lleva motivo: no fue un rechazo.
+        Assert.Null(filaAprobada.QuerySelector($"[data-testid='{ListadoDeSolicitudes.IdDelMotivo}']"));
+    }
+
+    private async Task SembrarResueltaAsync(
+        int empleadoId,
+        int resueltoPorId,
+        DateOnly inicio,
+        DateOnly fin,
+        EstadoSolicitud estado,
+        string? motivoDeRechazo)
+    {
+        await using var contexto = _baseDeDatos.CrearContexto();
+
+        contexto.Solicitudes.Add(new Solicitud
+        {
+            EmpleadoId = empleadoId,
+            FechaInicio = inicio,
+            FechaFin = fin,
+            DiasCorridos = CalculadorDeDiasCorridos.Contar(inicio, fin),
+            Estado = estado,
+            FechaCreacion = _instanteFijo,
+            ResueltoPorId = resueltoPorId,
+            FechaResolucion = _instanteFijo,
+            MotivoDeRechazo = motivoDeRechazo,
+        });
+
+        await contexto.SaveChangesAsync(Cancelacion);
+    }
 }

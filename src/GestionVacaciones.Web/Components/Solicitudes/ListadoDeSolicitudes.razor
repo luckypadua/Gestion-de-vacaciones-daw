@@ -1,7 +1,10 @@
 @using System.Globalization
+@using GestionVacaciones.Data.Entidades
 @using GestionVacaciones.Data.Services
 
-@* Las solicitudes propias del empleado, tal como las entrega SolicitudesService (AC-05). *@
+@* Las solicitudes propias del empleado, tal como las entrega SolicitudesService (AC-05). Desde
+   FEAT-002 (Bloque 5), las ya resueltas muestran además quién las resolvió y, si fue un rechazo, el
+   motivo (AC-06). *@
 
 @if (Solicitudes.Count == 0)
 {
@@ -21,6 +24,8 @@ else
                 <th scope="col">Días corridos</th>
                 <th scope="col">Estado</th>
                 <th scope="col">Enviada</th>
+                <th scope="col">Resuelto por</th>
+                <th scope="col">Motivo del rechazo</th>
             </tr>
         </thead>
         <tbody>
@@ -31,6 +36,21 @@ else
                     <td data-testid="@IdDeLosDiasCorridos">@solicitud.DiasCorridos</td>
                     <td data-testid="@IdDelEstado">@solicitud.Estado</td>
                     <td>@Instante(solicitud.FechaCreacion)</td>
+                    <td>
+                        @* AC-06: solo en las ya resueltas -- Pendiente no tiene quién. *@
+                        @if (solicitud.Estado != EstadoSolicitud.Pendiente)
+                        {
+                            <span data-testid="@IdDelResueltoPor">@TextoDeQuienResolvio(solicitud.ResueltoPorId)</span>
+                        }
+                    </td>
+                    <td>
+                        @* AC-06: solo en un rechazo. Texto plano, sin marcado sin escapar (R-24): la
+                           interpolación normal de Blazor ya escapa el contenido por su cuenta. *@
+                        @if (solicitud.Estado == EstadoSolicitud.Rechazada)
+                        {
+                            <span data-testid="@IdDelMotivo">@solicitud.MotivoDeRechazo</span>
+                        }
+                    </td>
                 </tr>
             }
         </tbody>
@@ -58,6 +78,15 @@ else
 
     public const string IdDelEstado = "estado-de-la-solicitud";
 
+    /// <summary>
+    /// FEAT-002 (Bloque 5, AC-06). Marcador de quién resolvió, presente solo en las filas
+    /// <c>Aprobada</c>/<c>Rechazada</c>.
+    /// </summary>
+    public const string IdDelResueltoPor = "resuelto-por";
+
+    /// <summary>FEAT-002 (Bloque 5, AC-06). Marcador del motivo, presente solo en las filas <c>Rechazada</c>.</summary>
+    public const string IdDelMotivo = "motivo-de-rechazo";
+
     /// <summary>Marcador del estado vacío. Distinguible del error, que vive en la página.</summary>
     public const string IdDelEstadoVacio = "sin-solicitudes";
 
@@ -84,4 +113,14 @@ else
 
     private static string Instante(DateTimeOffset instante) =>
         instante.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// FEAT-002 (Bloque 5, AC-06). Quién resolvió, mostrado por su identificador y no por su nombre: no
+    /// hay, en esta pantalla, un servicio que resuelva "nombre por id" sin sumar una consulta nueva que
+    /// expusiera PII de más (decisión de diseño documentada en el reporte del bloque). El identificador
+    /// ya lo tiene <c>SolicitudDelListado.ResueltoPorId</c> desde el Bloque 3, así que esto no agrega
+    /// ningún viaje a la base.
+    /// </summary>
+    private static string TextoDeQuienResolvio(int? resueltoPorId) =>
+        resueltoPorId is { } id ? $"Empleado #{id}" : string.Empty;
 }

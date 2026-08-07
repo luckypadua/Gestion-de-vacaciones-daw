@@ -955,4 +955,35 @@ public sealed class SolicitudesService
             .ToListAsync(cancelacion)
             .ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// ¿Tiene <c>quienConsulta</c> algún equipo a cargo? FEAT-002 (Bloque 5): es la pregunta que decide
+    /// si el link a <c>/autorizaciones</c> se muestra en el menú (<c>MainLayout</c>).
+    /// </summary>
+    /// <remarks>
+    /// <b>Única fuente de la respuesta: <see cref="PermisosService.EmpleadosBajoAutoridadDeAsync"/>.</b>
+    /// Este método no repite ninguna regla del organigrama, solo pregunta si la lista que aquel devuelve
+    /// no está vacía. Mitigación del hallazgo de arch-auditor en PLAN: la decisión de qué mostrar en el
+    /// menú tiene que salir del dominio, nunca de una consulta propia del componente
+    /// (<c>ComponentesSinAccesoADatosTests</c> lo refuerza: ningún <c>.razor</c> toca la base
+    /// directamente).
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Si no hay empleado actual resuelto —la excepción viene de
+    /// <see cref="PermisosService.EmpleadosBajoAutoridadDeAsync"/> y se propaga—: <c>MainLayout</c>
+    /// decide qué hacer con eso (Bloque 5), no este servicio.
+    /// </exception>
+    /// <exception cref="DbUpdateException">
+    /// Si falla la persistencia al consultar el organigrama. Se propaga sin <c>catch</c>, mismo
+    /// criterio que el resto de este servicio.
+    /// </exception>
+    public async Task<bool> TieneEquipoACargoAsync(CancellationToken cancelacion = default)
+    {
+        var quienConsulta = _empleadoActual.Identidad;
+
+        var equipo = await _permisos.EmpleadosBajoAutoridadDeAsync(quienConsulta, cancelacion)
+            .ConfigureAwait(false);
+
+        return equipo.Count > 0;
+    }
 }
