@@ -16,9 +16,12 @@ public class VacacionesDbContext : DbContext
     public const string IndiceDelListado = "IX_Solicitud_EmpleadoId_FechaCreacion";
 
     /// <summary>
-    /// Índice que sirve a la consulta del saldo (NFR-03): sin él, cada cálculo de
-    /// <c>SaldoService</c> escanea las solicitudes del empleado enteras en vez de acotar por estado y
-    /// rango de fechas.
+    /// Índice que sirve <b>dos</b> consultas con la misma forma —mismo <c>EmpleadoId</c>, mismo filtro
+    /// de estado, mismo rango de fechas—: la del saldo (NFR-03 de FEAT-001b, en <c>SaldoService</c>) y,
+    /// desde FEAT-001c (NFR-04 de ese sub-ticket), la de la superposición de períodos en
+    /// <c>SolicitudesService.CrearAsync</c>. Sin él, cada una de las dos escanea las solicitudes del
+    /// empleado enteras en vez de acotar por estado y rango de fechas. FEAT-001c no agrega ningún
+    /// índice propio: reutiliza este.
     /// </summary>
     public const string IndiceDelSaldo = "IX_Solicitud_EmpleadoId_Estado_FechaInicio";
 

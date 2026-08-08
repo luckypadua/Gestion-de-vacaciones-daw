@@ -67,8 +67,32 @@ Registro de los cambios de la **aplicación**. El formato sigue
   50 tests nuevos sobre los 198 de FEAT-001a (269 en total), cobertura del 95,5% en líneas y 92,8%
   en ramas sobre el proyecto, 100% sobre el dominio nuevo. SAST PASSED, 0 vulnerabilidades.
 
+- **FEAT-001c — No superposición de períodos.** Un empleado no puede tener dos solicitudes vigentes
+  sobre fechas que se tocan: la tercera y última regla de negocio de PRD-001 sobre el esqueleto que
+  entregó FEAT-001a.
+
+  - `SolicitudesService.CrearAsync` valida, después de las fechas y antes del tope, que el período no
+    se superponga con otra solicitud `Pendiente` o `Aprobada` del mismo empleado. Las solicitudes
+    `Rechazada` no bloquean fechas que quedaron libres, y dos períodos consecutivos siguen siendo
+    posibles.
+  - La consulta reutiliza el índice y la transacción serializable que ya existían: **esta entrega no
+    agrega ninguna migración**.
+  - Bajo dos envíos concurrentes con fechas solapadas, un conflicto de serialización del motor se
+    resuelve con un reintento único y dirigido —repite solo la pregunta de solapamiento, nunca todo
+    el flujo—, para que la persona que pierde la carrera reciba el mensaje de superposición y no una
+    excepción cruda.
+  - `EstadosDeSolicitud.Vigentes` pasa a ser la fuente única de qué estados de una solicitud cuentan
+    —para el saldo y para la superposición por igual—, reemplazando un literal que antes vivía
+    duplicado.
+
+  15 tests nuevos sobre los 269 de FEAT-001a+b (284 en total), cobertura 97,97%-100% en líneas y
+  100% en ramas sobre el código nuevo. SAST PASSED, 0 vulnerabilidades.
+
+Con FEAT-001c cierran las tres reglas de negocio de PRD-001 sobre solicitudes de vacaciones: fechas
+válidas, tope anual y no superposición.
+
 ### Fuera de alcance de esta entrega
 
-La detección de superposición de períodos (FEAT-001c), y la aprobación o rechazo por parte del
-manager. La verificación de carga —p95 < 3 s con 50 concurrentes— queda diferida a un ticket de
-performance propio; este ticket entrega la condición estructural (el índice), no la medición.
+La aprobación o rechazo por parte del manager. La verificación de carga —p95 < 3 s con 50
+concurrentes— queda diferida a un ticket de performance propio; FEAT-001b y FEAT-001c entregan la
+condición estructural (los índices), no la medición.
