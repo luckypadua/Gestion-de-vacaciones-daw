@@ -8,18 +8,23 @@
 | Modelo de amenazas | `docs/daw/security/threat-FIX-001.md` |
 | Catálogo de reglas | `.daw/rules/validation-rules.instructions.md` §3/§4 |
 | Fecha | 2026-08-07 |
-| Ejecuciones | 1 |
+| Ejecuciones | 2 · cierre de CODE + recierre tras bucle correctivo de VERIFY |
 | Resultado | **PASSED** |
 
 ## Alcance
 
-El delta completo del fix: `IEmpleadoActualProvider.cs` (evento nuevo en la interfaz),
-`EmpleadoActualDesarrollo.cs` y `EmpleadoActualNoConfigurado.cs` (implementación del evento),
-`MainLayout.razor` (reevaluación reactiva), `IdentidadDePrueba.cs` y `AutorizacionesTests.cs`
-(tests). Ningún `.csproj` fue tocado: `git diff --stat -- '*.csproj'` vacío, 0 dependencias nuevas.
-`grep -iE "password|secret|apikey|connectionstring|token"` y
+**Ejecución 1** — el delta completo del fix: `IEmpleadoActualProvider.cs` (evento nuevo en la
+interfaz), `EmpleadoActualDesarrollo.cs` y `EmpleadoActualNoConfigurado.cs` (implementación del
+evento), `MainLayout.razor` (reevaluación reactiva), `IdentidadDePrueba.cs` y
+`AutorizacionesTests.cs` (tests). Ningún `.csproj` fue tocado: `git diff --stat -- '*.csproj'`
+vacío, 0 dependencias nuevas. `grep -iE "password|secret|apikey|connectionstring|token"` y
 `grep -E "FromSqlRaw|ExecuteSqlRaw|MarkupString"` sobre el delta: 0 apariciones en ambos.
 `dotnet list ... --vulnerable --include-transitive` en `Data` y `Web`: 0 paquetes vulnerables.
+
+**Ejecución 2** (recierre) — el delta agregado por el bucle correctivo VERIFY→CODE (1 FAIL de
+evidencia TDD, documentado en el commit; 2 WARN no bloqueantes): solo un test nuevo en
+`AutorizacionesTests.cs` que cubre `EmpleadoActualNoConfigurado.IdentidadCambiada`. Ningún archivo
+de producción ni `.csproj` cambió. Mismos `grep` sobre el delta: 0 apariciones.
 
 ## Resultado por categoría
 

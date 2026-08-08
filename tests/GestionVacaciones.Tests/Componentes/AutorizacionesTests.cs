@@ -285,6 +285,31 @@ public sealed class AutorizacionesTests : ContextoDeComponentes
     }
 
     [Fact]
+    public void El_evento_de_identidad_se_suscribe_y_desuscribe_aun_sin_identidad_de_desarrollo()
+    {
+        // WARN 1 de VERIFY ronda 1 (FIX-001): los accesores add/remove de
+        // EmpleadoActualNoConfigurado.IdentidadCambiada tenían 0 ejecuciones. MainLayout se
+        // suscribe en OnInitialized sin importar qué proveedor esté inyectado -- también fuera de
+        // desarrollo, donde PermiteElegirEmpleado es false y nadie va a disparar el evento nunca --
+        // y hasta este test ninguno lo ejercitaba con EmpleadoActualNoConfigurado. bUnit desecha el
+        // árbol de render al final del test, lo que dispara Dispose() y ejercita también `remove`.
+        Services.AddSingleton<TimeProvider>(_tiempo);
+        Services.AddSingleton<IDbContextFactory<VacacionesDbContext>>(new FabricaQueNadieDebeUsar());
+        Services.AddSingleton<IEmpleadoActualProvider, EmpleadoActualNoConfigurado>();
+        Services.AddSingleton<PermisosService>();
+        Services.AddSingleton<SaldoService>();
+        Services.AddSingleton<SolicitudesService>();
+
+        var layout = Render<MainLayout>(parametros => parametros.Add(pantalla => pantalla.Body, ContenidoDePrueba));
+
+        layout.WaitForState(() => EstadoDelMenu(layout) == MainLayout.EstadoListo, TimeSpan.FromSeconds(10));
+
+        // Identidad.get lanza (Negar()), no SinEmpleadoSeleccionadoException: cae en el catch
+        // genérico, mismo comportamiento que el resto de esta clase ya prueba. El link no aparece.
+        Assert.Empty(layout.FindAll($"[data-testid='{MainLayout.IdDelLinkDeAutorizaciones}']"));
+    }
+
+    [Fact]
     public async Task Si_resolver_falla_se_muestra_el_mensaje_sin_romper_la_pantalla()
     {
         _baseDeDatos.SaltearSiNoEstaDisponible();
