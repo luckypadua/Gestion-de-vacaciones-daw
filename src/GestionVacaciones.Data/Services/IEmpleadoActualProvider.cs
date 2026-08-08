@@ -189,4 +189,18 @@ public interface IEmpleadoActualProvider
     /// En los entornos donde la identidad de desarrollo no está habilitada (AC-06).
     /// </exception>
     Task<ResultadoDeSeleccion> SeleccionarAsync(int empleadoId, CancellationToken cancelacion = default);
+
+    /// <summary>
+    /// Se dispara cuando <see cref="Identidad"/> cambia de verdad (un <see cref="SeleccionarAsync"/>
+    /// exitoso). Sin datos en el payload a propósito (<c>EventHandler</c>, no
+    /// <c>EventHandler&lt;int&gt;</c>): quien se suscribe vuelve a preguntar <see cref="Identidad"/>,
+    /// la única sede de la verdad (NFR-06), en vez de confiar en lo que el evento le pase.
+    /// </summary>
+    /// <remarks>
+    /// Existe para que un componente que <b>no</b> es ancestro de quien elige la identidad —como
+    /// <c>MainLayout</c>, que envuelve <c>@Body</c> en vez de vivir dentro de él— pueda enterarse de
+    /// un cambio sin convertirse en uno (FIX-001). Antes de este evento, un componente así solo podía
+    /// preguntar una vez, al arrancar, y quedaba desactualizado el resto del circuito.
+    /// </remarks>
+    event EventHandler? IdentidadCambiada;
 }

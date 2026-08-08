@@ -1,6 +1,8 @@
 @inherits LayoutComponentBase
+@implements IDisposable
 @using GestionVacaciones.Data.Services
 @inject SolicitudesService Solicitudes
+@inject IEmpleadoActualProvider EmpleadoActual
 @inject ILogger<MainLayout> Registro
 
 <MudThemeProvider />
@@ -47,15 +49,38 @@
     private bool _tieneEquipoACargo;
 
     /// <summary>
-    /// Pregunta al dominio si el empleado actual tiene equipo a cargo (Block 5, SolicitudesService).
-    /// Cualquier fallo -- sin identidad, base caída -- deja el link oculto: mostrarlo ante una duda
-    /// llevaría a alguien a una pantalla que el servidor de todos modos le va a negar.
+    /// Se suscribe ANTES de la primera evaluación (FIX-001): un componente que no es ancestro de
+    /// <c>SelectorDeEmpleado</c> no se entera solo cuando la identidad cambia después de arrancar, y
+    /// hasta este fix no volvía a preguntar nunca -- el link quedaba fijo en lo que hubiera contestado
+    /// al primerísimo render, casi siempre "sin identidad todavía".
     /// </summary>
+    protected override void OnInitialized() =>
+        EmpleadoActual.IdentidadCambiada += AlCambiarLaIdentidad;
+
+    /// <summary>Primera evaluación del circuito, con la identidad que haya en ese momento (a menudo ninguna).</summary>
     protected override async Task OnInitializedAsync()
+    {
+        await EvaluarSiTieneEquipoACargoAsync();
+        _estado = EstadoListo;
+    }
+
+    /// <summary>
+    /// Pregunta al dominio si el empleado actual tiene equipo a cargo (Block 5, SolicitudesService).
+    /// Compartido entre la evaluación inicial y la reactiva (FIX-001) a propósito: los dos catches de
+    /// abajo solo necesitan un lugar donde ser correctos, y ejercerlos desde cualquiera de las dos
+    /// rutas cubre a la otra.
+    /// </summary>
+    private async Task EvaluarSiTieneEquipoACargoAsync()
     {
         try
         {
             _tieneEquipoACargo = await Solicitudes.TieneEquipoACargoAsync();
+        }
+        catch (SinEmpleadoSeleccionadoException)
+        {
+            // Estado esperado del circuito recién abierto, no un error: mismo criterio que
+            // MisSolicitudes.RecargarAsync ya aplica a esta misma excepción. No se loguea.
+            _tieneEquipoACargo = false;
         }
         catch (Exception excepcion)
         {
@@ -64,9 +89,23 @@
 
             _tieneEquipoACargo = false;
         }
-        finally
-        {
-            _estado = EstadoListo;
-        }
     }
+
+    /// <summary>
+    /// Reacciona a <see cref="IEmpleadoActualProvider.IdentidadCambiada"/> (FIX-001): sin esto, el
+    /// link quedaba fijo en lo que la evaluación inicial hubiera contestado, sin importar qué elija
+    /// después el usuario. La excepción, si la hay, queda contenida DENTRO de la continuación que
+    /// recibe <c>InvokeAsync</c> -- mitigación del riesgo MEDIUM del modelo de amenazas
+    /// (docs/daw/security/threat-FIX-001.md): sin esa contención, un fallo transitorio de
+    /// <c>TieneEquipoACargoAsync</c> podría tumbar el circuito completo en vez de solo ocultar el link.
+    /// </summary>
+    private void AlCambiarLaIdentidad(object? remitente, EventArgs argumentos) =>
+        _ = InvokeAsync(async () =>
+        {
+            await EvaluarSiTieneEquipoACargoAsync();
+            StateHasChanged();
+        });
+
+    /// <summary>Desuscribe del proveedor de identidad. Primer <c>event</c> del repo: sin precedente que seguir.</summary>
+    public void Dispose() => EmpleadoActual.IdentidadCambiada -= AlCambiarLaIdentidad;
 }

@@ -64,6 +64,18 @@ public sealed class EmpleadoActualNoConfigurado : IEmpleadoActualProvider
         throw Negar();
 
     /// <summary>
+    /// Declarado por contrato de la interfaz. Nunca se dispara: <see cref="SeleccionarAsync"/> en
+    /// esta clase siempre lanza, así que jamás se llega al punto donde cambiaría la identidad.
+    /// Accesores explícitos y vacíos, no un evento de campo: uno de campo que nunca se invoca es
+    /// <c>CS0067</c>, y con <c>TreatWarningsAsErrors</c> eso rompe el build.
+    /// </summary>
+    public event EventHandler? IdentidadCambiada
+    {
+        add { }
+        remove { }
+    }
+
+    /// <summary>
     /// <see cref="InvalidOperationException"/> <b>exactamente</b>, nunca una derivada: el tipo es lo que
     /// distingue «no hay identidad configurada» de «todavía no elegiste a nadie»
     /// (<see cref="SinEmpleadoSeleccionadoException"/>), que son dos estados opuestos que tampoco

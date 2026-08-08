@@ -6,6 +6,7 @@ using GestionVacaciones.Tests.Dominio;
 using GestionVacaciones.Tests.Persistencia;
 using GestionVacaciones.Web.Components.Layout;
 using GestionVacaciones.Web.Components.Pages;
+using GestionVacaciones.Web.Identidad;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.EntityFrameworkCore;
@@ -220,6 +221,41 @@ public sealed class AutorizacionesTests : ContextoDeComponentes
     }
 
     [Fact]
+    public async Task El_link_de_autorizaciones_aparece_al_elegir_un_manager_sin_recrear_el_layout()
+    {
+        // FIX-001: reproduce el bug tal como ocurre en producción -- el circuito arranca sin
+        // identidad (SelectorDeEmpleado.razor, dentro de @Body, todavía no ofreció nada) y el usuario
+        // elige DESPUÉS de que <MainLayout> ya se inicializó. Por eso usa el proveedor real
+        // (EmpleadoActualDesarrollo), no IdentidadDePrueba: es el único que arranca SinSeleccionar y
+        // cambia con SeleccionarAsync, igual que en producción.
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+
+        await using var manager = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await using var subordinado = await _baseDeDatos.CrearEmpleadoDescartableAsync();
+        await AsignarManagerAsync(subordinado.Id, manager.Id);
+
+        RegistrarConSelectorInteractivo();
+
+        var layout = Render<MainLayout>(parametros => parametros.Add(pantalla => pantalla.Body, ContenidoDePrueba));
+        layout.WaitForState(() => EstadoDelMenu(layout) == MainLayout.EstadoListo, TimeSpan.FromSeconds(10));
+
+        // Antes de elegir: el link no aparece -- y no por el catch genérico, sino por el estado
+        // esperado "sin identidad todavía" (SinEmpleadoSeleccionadoException), que
+        // EvaluarSiTieneEquipoACargoAsync trata sin loguear error.
+        Assert.Empty(layout.FindAll($"[data-testid='{MainLayout.IdDelLinkDeAutorizaciones}']"));
+
+        var identidad = Services.GetRequiredService<IEmpleadoActualProvider>();
+        var resultado = await identidad.SeleccionarAsync(manager.Id, Cancelacion);
+        Assert.Equal(ResultadoDeSeleccion.Seleccionado, resultado);
+
+        // Reactivo: nadie volvió a renderizar <MainLayout> desde cero -- el mismo layout se entera
+        // solo, vía IEmpleadoActualProvider.IdentidadCambiada.
+        layout.WaitForState(
+            () => layout.FindAll($"[data-testid='{MainLayout.IdDelLinkDeAutorizaciones}']").Count == 1,
+            TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
     public void Si_TieneEquipoACargoAsync_falla_el_link_no_aparece_y_el_resto_del_layout_sigue_en_pie()
     {
         // Hallazgo 1 de VERIFY (NFR-01): el catch de MainLayout.OnInitializedAsync alrededor de
@@ -246,6 +282,31 @@ public sealed class AutorizacionesTests : ContextoDeComponentes
         // pantalla completa.
         Assert.Contains("contenido de prueba", layout.Markup, StringComparison.Ordinal);
         Assert.DoesNotContain(FabricaQueNadieDebeUsar.Marca, layout.Markup, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void El_evento_de_identidad_se_suscribe_y_desuscribe_aun_sin_identidad_de_desarrollo()
+    {
+        // WARN 1 de VERIFY ronda 1 (FIX-001): los accesores add/remove de
+        // EmpleadoActualNoConfigurado.IdentidadCambiada tenían 0 ejecuciones. MainLayout se
+        // suscribe en OnInitialized sin importar qué proveedor esté inyectado -- también fuera de
+        // desarrollo, donde PermiteElegirEmpleado es false y nadie va a disparar el evento nunca --
+        // y hasta este test ninguno lo ejercitaba con EmpleadoActualNoConfigurado. bUnit desecha el
+        // árbol de render al final del test, lo que dispara Dispose() y ejercita también `remove`.
+        Services.AddSingleton<TimeProvider>(_tiempo);
+        Services.AddSingleton<IDbContextFactory<VacacionesDbContext>>(new FabricaQueNadieDebeUsar());
+        Services.AddSingleton<IEmpleadoActualProvider, EmpleadoActualNoConfigurado>();
+        Services.AddSingleton<PermisosService>();
+        Services.AddSingleton<SaldoService>();
+        Services.AddSingleton<SolicitudesService>();
+
+        var layout = Render<MainLayout>(parametros => parametros.Add(pantalla => pantalla.Body, ContenidoDePrueba));
+
+        layout.WaitForState(() => EstadoDelMenu(layout) == MainLayout.EstadoListo, TimeSpan.FromSeconds(10));
+
+        // Identidad.get lanza (Negar()), no SinEmpleadoSeleccionadoException: cae en el catch
+        // genérico, mismo comportamiento que el resto de esta clase ya prueba. El link no aparece.
+        Assert.Empty(layout.FindAll($"[data-testid='{MainLayout.IdDelLinkDeAutorizaciones}']"));
     }
 
     [Fact]
@@ -397,6 +458,22 @@ public sealed class AutorizacionesTests : ContextoDeComponentes
         Services.AddSingleton<TimeProvider>(_tiempo);
         Services.AddSingleton<IDbContextFactory<VacacionesDbContext>>(new FabricaDeLaBaseDeTest(_baseDeDatos));
         Services.AddSingleton<IEmpleadoActualProvider>(IdentidadDePrueba.De(empleadoId));
+        Services.AddSingleton<PermisosService>();
+        Services.AddSingleton<SaldoService>();
+        Services.AddSingleton<SolicitudesService>();
+    }
+
+    /// <summary>
+    /// Registra el proveedor de identidad REAL (FIX-001), no el doble de prueba: es el único que
+    /// arranca <c>SinSeleccionar</c> y cambia con <c>SeleccionarAsync</c> validando contra la nómina,
+    /// igual que <c>SelectorDeEmpleado.razor</c> en producción.
+    /// </summary>
+    private void RegistrarConSelectorInteractivo()
+    {
+        Services.AddSingleton<TimeProvider>(_tiempo);
+        Services.AddSingleton<IDbContextFactory<VacacionesDbContext>>(new FabricaDeLaBaseDeTest(_baseDeDatos));
+        Services.AddSingleton<EmpleadosService>();
+        Services.AddSingleton<IEmpleadoActualProvider, EmpleadoActualDesarrollo>();
         Services.AddSingleton<PermisosService>();
         Services.AddSingleton<SaldoService>();
         Services.AddSingleton<SolicitudesService>();
