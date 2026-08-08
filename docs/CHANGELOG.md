@@ -122,6 +122,14 @@ válidas, tope anual y no superposición.
 Con FEAT-002 quedan completos los tres requisitos funcionales de PRD-001 que no entraban en
 FEAT-001: aprobar, rechazar y listar las solicitudes pendientes del equipo.
 
+### Fixed
+
+- **FIX-001 — El link "Autorizaciones" nunca llegaba a aparecer.** El menú preguntaba una única
+  vez, al arrancar el circuito y antes de que el empleado eligiera identidad, si correspondía
+  mostrarlo — y nunca volvía a preguntar. `IEmpleadoActualProvider` gana un evento que avisa cuando
+  la identidad cambia, y el menú se suscribe para reevaluar la pregunta cuando corresponde, en vez
+  de una sola vez al arrancar.
+
 ### Fuera de alcance de esta entrega
 
 Las notificaciones al empleado cuando su solicitud se resuelve. La verificación de carga —p95 < 3 s
