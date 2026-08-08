@@ -1,5 +1,7 @@
+using System.Data;
 using GestionVacaciones.Data.Entidades;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace GestionVacaciones.Data.Services;
 
@@ -25,10 +27,21 @@ public sealed class ResultadoDelAlta
 {
     private readonly int? _solicitudId;
 
-    private ResultadoDelAlta(int? solicitudId, string mensajeDeError)
+    /// <summary>
+    /// FEAT-001b, mitigación de <b>R-14</b>. El rechazo por saldo insuficiente lleva, en
+    /// <see cref="MensajeDeError"/>, el saldo real de una persona identificable. Ese texto es lo que se
+    /// muestra al empleado —eso no cambia—, pero <see cref="ToString"/> es lo que un log interpola sin
+    /// que nadie escriba una línea que lo delate, y un saldo junto al <c>EmpleadoId</c> que ya se
+    /// registra dice cuánto se ausentó esa persona. Los rechazos por fecha no llevan este dato —el
+    /// literal es igual para todo el mundo— y siguen apareciendo enteros en el diagnóstico.
+    /// </summary>
+    private readonly bool _elMotivoEsUnSaldo;
+
+    private ResultadoDelAlta(int? solicitudId, string mensajeDeError, bool elMotivoEsUnSaldo)
     {
         _solicitudId = solicitudId;
         MensajeDeError = mensajeDeError;
+        _elMotivoEsUnSaldo = elMotivoEsUnSaldo;
     }
 
     /// <summary>¿Quedó creada la solicitud? Lo que hay que preguntar antes de pedir el identificador.</summary>
@@ -59,7 +72,7 @@ public sealed class ResultadoDelAlta
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(solicitudId);
 
-        return new ResultadoDelAlta(solicitudId, string.Empty);
+        return new ResultadoDelAlta(solicitudId, string.Empty, elMotivoEsUnSaldo: false);
     }
 
     /// <summary>El alta se rechazó por <paramref name="mensajeDeError"/>, que es un literal del PRD.</summary>
@@ -71,16 +84,37 @@ public sealed class ResultadoDelAlta
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(mensajeDeError);
 
-        return new ResultadoDelAlta(null, mensajeDeError);
+        return new ResultadoDelAlta(null, mensajeDeError, elMotivoEsUnSaldo: false);
+    }
+
+    /// <summary>
+    /// FEAT-001b. El alta se rechazó porque el saldo no alcanza —AC-02 o AC-03, ya compuesto con el
+    /// saldo real por <see cref="ErroresDeSolicitud.ComponerSaldoInsuficiente"/> o
+    /// <see cref="ErroresDeSolicitud.ComponerSaldoInsuficienteDeDosAnios"/>—. Se distingue de
+    /// <see cref="Rechazada"/> porque <see cref="ToString"/> tiene que omitir este texto (R-14): es el
+    /// único mensaje de rechazo que lleva un dato de la persona.
+    /// </summary>
+    /// <exception cref="ArgumentException">Si el mensaje está en blanco.</exception>
+    public static ResultadoDelAlta RechazadaPorSaldoInsuficiente(string mensajeDeError)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mensajeDeError);
+
+        return new ResultadoDelAlta(null, mensajeDeError, elMotivoEsUnSaldo: true);
     }
 
     /// <summary>
     /// Descripción para diagnóstico. Lleva el identificador o el motivo del rechazo —que es un literal
-    /// fijo del PRD— y ningún dato de la persona (R-12).
+    /// fijo del PRD— y ningún dato de la persona (R-12), salvo que el motivo lleve un saldo, en cuyo
+    /// caso el texto se omite del todo (R-14).
     /// </summary>
     public override string ToString() =>
         _solicitudId is null
-            ? $"{nameof(ResultadoDelAlta)} {{ rechazada: {MensajeDeError} }}"
+            ? (_elMotivoEsUnSaldo
+                // El literal "14" no puede aparecer acá ni siquiera como referencia al riesgo: rompería
+                // PuntoUnicoDelTopeTests.El_numero_del_tope_solo_aparece_en_TopeAnual (NFR-01), que
+                // escanea las cadenas del código y no solo los comentarios.
+                ? $"{nameof(ResultadoDelAlta)} {{ rechazada: saldo insuficiente (motivo omitido) }}"
+                : $"{nameof(ResultadoDelAlta)} {{ rechazada: {MensajeDeError} }}")
             : $"{nameof(ResultadoDelAlta)} {{ SolicitudId = {_solicitudId} }}";
 }
 
@@ -142,9 +176,11 @@ public sealed record SolicitudDelListado(
 /// al cruzar la medianoche.
 /// </para>
 /// <para>
-/// <b>Fuera de alcance en este ticket:</b> el tope anual de 14 días (FEAT-001b) y la detección de
-/// superposición (FEAT-001c). Un período de duración arbitraria <b>se acepta</b> en FEAT-001a, y el PRD lo
-/// declara explícitamente.
+/// <b>El tope anual, desde FEAT-001b (Bloque 3).</b> <see cref="CrearAsync"/> compara los días del
+/// período contra el saldo de cada año calendario que afecta, provisto por <see cref="SaldoService"/> —
+/// única fuente del cálculo (NFR-04)—, dentro de una transacción serializable que cierra la carrera de
+/// dos altas concurrentes del mismo empleado (R-17). La detección de superposición sigue fuera de
+/// alcance: la entrega FEAT-001c.
 /// </para>
 /// <para>
 /// Acceso a datos siempre con <see cref="IDbContextFactory{TContext}"/> (NFR-05): cada operación abre y
@@ -157,6 +193,8 @@ public sealed class SolicitudesService
     private readonly IEmpleadoActualProvider _empleadoActual;
     private readonly PermisosService _permisos;
     private readonly TimeProvider _tiempo;
+    private readonly SaldoService _saldo;
+    private readonly ILogger<SolicitudesService> _registro;
 
     /// <param name="fabrica">
     /// Fábrica de contextos. Siempre <see cref="IDbContextFactory{TContext}"/> y nunca un
@@ -171,17 +209,31 @@ public sealed class SolicitudesService
     /// Fuente de tiempo. Inyectada, no leída del reloj del sistema: es lo que hace verificable la regla de
     /// AC-02.
     /// </param>
+    /// <param name="saldo">
+    /// FEAT-001b. Única fuente del saldo por año (NFR-04): contra ella se compara el período antes de
+    /// persistir.
+    /// </param>
+    /// <param name="registro">
+    /// FEAT-001b. El rechazo por tope se registra acá, con <c>EmpleadoId</c> y año, nunca con el mensaje
+    /// compuesto (R-18). Mismo patrón que <c>SeedDatos</c>.
+    /// </param>
     public SolicitudesService(
         IDbContextFactory<VacacionesDbContext> fabrica,
         IEmpleadoActualProvider empleadoActual,
         PermisosService permisos,
-        TimeProvider tiempo)
+        TimeProvider tiempo,
+        SaldoService saldo,
+        ILogger<SolicitudesService> registro)
     {
         ArgumentNullException.ThrowIfNull(fabrica);
         ArgumentNullException.ThrowIfNull(empleadoActual);
         ArgumentNullException.ThrowIfNull(permisos);
         ArgumentNullException.ThrowIfNull(tiempo);
+        ArgumentNullException.ThrowIfNull(saldo);
+        ArgumentNullException.ThrowIfNull(registro);
 
+        _saldo = saldo;
+        _registro = registro;
         _fabrica = fabrica;
         _empleadoActual = empleadoActual;
         _permisos = permisos;
@@ -216,6 +268,40 @@ public sealed class SolicitudesService
     /// bug de validación, no un error del usuario, y convertirla en un rechazo le mostraría al empleado un
     /// mensaje de validación por un defecto del código.
     /// </exception>
+    /// <remarks>
+    /// <para>
+    /// FEAT-001b (Bloque 3). <b>El orden es contrato:</b> el tope se valida <i>después</i> de las dos
+    /// fechas y <i>antes</i> de construir la entidad — con las dos fechas mal, o con un período invertido,
+    /// no se abre ningún contexto (fijado por <c>ValidacionDelAltaTests</c> y por
+    /// <c>El_tope_se_valida_despues_de_las_fechas_y_sin_tocar_la_base</c>, montados con
+    /// <c>FabricaQueNadieDebeUsar</c>).
+    /// </para>
+    /// <para>
+    /// <b>Más de dos años calendario</b> se rechaza en memoria, sin tocar la base (R-15): un año calendario
+    /// íntegro dentro del período ya imputa 365 o 366 días, que supera el tope en cualquier saldo posible.
+    /// </para>
+    /// <para>
+    /// <b>La transacción serializable</b> envuelve leer el saldo y guardar (R-17). Dentro de ella se hace
+    /// además una lectura propia, de solo lectura y de resultado descartado, sobre <b>esta misma
+    /// conexión</b>: es lo que fuerza el <i>lock</i> de rango serializable que <see cref="SaldoService"/>
+    /// —que abre su propio contexto por diseño, NFR-05— no puede sostener por sí sola, porque su lectura
+    /// termina (y libera el suyo) en cuanto vuelve, mucho antes de este guardado. Verificado empíricamente
+    /// contra la instancia real: sin esta lectura acá, dos altas concurrentes con la transacción puesta
+    /// igual suman más de <see cref="TopeAnual.Dias"/>.
+    /// </para>
+    /// <para>
+    /// <b>El reparto entre dos años</b> no llama a <c>ImputacionPorAnio.DiasEnElAnio</c>: esa función está
+    /// restringida a <see cref="SaldoService"/> (<c>PuntoUnicoDelTopeTests.Solo_SaldoService_consume_DiasEnElAnio</c>,
+    /// Bloque 2). Acotado ya a como máximo dos años consecutivos, partir en el 31 de diciembre con
+    /// <see cref="CalculadorDeDiasCorridos.Contar"/> —la misma función que hace todo el conteo del
+    /// dominio— produce el mismo número sin una segunda implementación de la fórmula.
+    /// </para>
+    /// <para>
+    /// Tope superado → <see cref="ResultadoDelAlta.RechazadaPorSaldoInsuficiente"/>, no excepción. Un
+    /// fallo real de persistencia, o cualquier excepción del motor —incluido un conflicto de
+    /// serialización, error 1205— se propaga tal cual, sin <c>catch</c> y sin reintento (R-16).
+    /// </para>
+    /// </remarks>
     public async Task<ResultadoDelAlta> CrearAsync(
         DateOnly fechaInicio,
         DateOnly fechaFin,
@@ -241,6 +327,72 @@ public sealed class SolicitudesService
             return ResultadoDelAlta.Rechazada(ErroresDeSolicitud.FechaDeFinAnteriorALaFechaDeInicio);
         }
 
+        var diasCorridos = CalculadorDeDiasCorridos.Contar(fechaInicio, fechaFin);
+        var aniosAbarcados = ImputacionPorAnio.AniosAbarcados(fechaInicio, fechaFin);
+
+        if (aniosAbarcados.Count > SaldoService.MaximoDeAniosPorConsulta)
+        {
+            // R-15: un año calendario íntegro entra en el período, y 365/366 días superan el tope en
+            // cualquier saldo posible. Se rechaza SIN consultar la base: ni siquiera se abre un contexto.
+            _registro.LogInformation(
+                "Rechazo por tope: el período del empleado {EmpleadoId} abarca {CantidadDeAnios} años " +
+                "calendario, más de los {MaximoDeAnios} que admite una única solicitud. Días pedidos: " +
+                "{DiasSolicitados}. Se rechazó sin consultar el saldo.",
+                autor, aniosAbarcados.Count, SaldoService.MaximoDeAniosPorConsulta, diasCorridos);
+
+            return ResultadoDelAlta.RechazadaPorSaldoInsuficiente(
+                ErroresDeSolicitud.ComponerSaldoInsuficiente(0));
+        }
+
+        await using var contexto = await _fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
+        await using var transaccion = await contexto.Database
+            .BeginTransactionAsync(IsolationLevel.Serializable, cancelacion)
+            .ConfigureAwait(false);
+
+        // Fuerza el lock de rango serializable de ESTA conexión sobre las filas del empleado, ANTES de
+        // decidir. Ver el remarks de este método para el porqué: sin esto, dos altas concurrentes no
+        // quedan protegidas aunque la transacción exista.
+        await contexto.Solicitudes
+            .AsNoTracking()
+            .Where(solicitud => solicitud.EmpleadoId == autor)
+            .AnyAsync(cancelacion)
+            .ConfigureAwait(false);
+
+        var saldos = await _saldo.DeLosAniosAsync(aniosAbarcados, cancelacion).ConfigureAwait(false);
+
+        var diasPorAnio = aniosAbarcados.Count == 1
+            ? [diasCorridos]
+            : PartirEntreLosDosAnios(fechaInicio, diasCorridos, aniosAbarcados[0]);
+
+        var indicesInsuficientes = new List<int>(saldos.Count);
+        for (var indice = 0; indice < saldos.Count; indice++)
+        {
+            if (diasPorAnio[indice] > saldos[indice].DiasDisponibles)
+            {
+                indicesInsuficientes.Add(indice);
+            }
+        }
+
+        if (indicesInsuficientes.Count > 0)
+        {
+            await transaccion.RollbackAsync(cancelacion).ConfigureAwait(false);
+
+            // R-18: EmpleadoId y año, nunca el mensaje compuesto (R-14) — el log no puede llevar lo que
+            // ToString() de ResultadoDelAlta ya se ocupa de no exponer.
+            _registro.LogInformation(
+                "Rechazo por tope: empleado {EmpleadoId}, año(s) afectado(s) {AniosAfectados}, " +
+                "{DiasSolicitados} días pedidos.",
+                autor,
+                string.Join(",", indicesInsuficientes.Select(indice => saldos[indice].Anio)),
+                diasCorridos);
+
+            var mensaje = saldos.Count == 1
+                ? ErroresDeSolicitud.ComponerSaldoInsuficiente(saldos[0].DiasDisponibles)
+                : ErroresDeSolicitud.ComponerSaldoInsuficienteDeDosAnios(saldos[0], saldos[1]);
+
+            return ResultadoDelAlta.RechazadaPorSaldoInsuficiente(mensaje);
+        }
+
         var solicitud = new Solicitud
         {
             EmpleadoId = autor,
@@ -249,7 +401,7 @@ public sealed class SolicitudesService
 
             // El mismo cálculo que muestra la interfaz (AC-01): un punto único, y la check constraint
             // CK_Solicitud_DiasCoincidenConPeriodo rechazando cualquier discrepancia.
-            DiasCorridos = CalculadorDeDiasCorridos.Contar(fechaInicio, fechaFin),
+            DiasCorridos = diasCorridos,
 
             // Nace y permanece en Pendiente: el flujo de aprobación es de un ticket futuro, así que
             // ninguna solicitud produce efectos todavía.
@@ -260,12 +412,27 @@ public sealed class SolicitudesService
             FechaCreacion = _tiempo.GetLocalNow(),
         };
 
-        await using var contexto = await _fabrica.CreateDbContextAsync(cancelacion).ConfigureAwait(false);
-
         contexto.Solicitudes.Add(solicitud);
         await contexto.SaveChangesAsync(cancelacion).ConfigureAwait(false);
+        await transaccion.CommitAsync(cancelacion).ConfigureAwait(false);
 
         return ResultadoDelAlta.Creada(solicitud.Id);
+    }
+
+    /// <summary>
+    /// Cuántos de los <paramref name="diasCorridos"/> del período caen en <paramref name="primerAnio"/> y
+    /// cuántos en el siguiente. Precondición del llamador: el período abarca <b>exactamente</b> dos años
+    /// calendario consecutivos —ya lo garantizó <see cref="ImputacionPorAnio.AniosAbarcados"/> más arriba—,
+    /// así que el reparto es una resta contra el 31 de diciembre del primero, sin volver a preguntarle a
+    /// <c>ImputacionPorAnio</c> (ver el remarks de <see cref="CrearAsync"/>).
+    /// </summary>
+    private static IReadOnlyList<int> PartirEntreLosDosAnios(
+        DateOnly fechaInicio, int diasCorridos, int primerAnio)
+    {
+        var finDelPrimerAnio = new DateOnly(primerAnio, 12, 31);
+        var diasEnElPrimerAnio = CalculadorDeDiasCorridos.Contar(fechaInicio, finDelPrimerAnio);
+
+        return [diasEnElPrimerAnio, diasCorridos - diasEnElPrimerAnio];
     }
 
     /// <summary>

@@ -76,12 +76,12 @@ public sealed class FuenteDeTiempoTests
     }
 
     [Fact]
-    public async Task El_host_registra_el_TimeProvider_y_los_dos_servicios_del_dominio()
+    public async Task El_host_registra_el_TimeProvider_y_los_servicios_del_dominio()
     {
-        // Sin el registro, los componentes del Bloque 6 no pueden inyectar nada y el bloque entero queda
-        // inalcanzable desde la aplicación. Se construye en Production a propósito: los servicios del
-        // dominio NO dependen de la doble condición de R-01 —el alta y el listado son funcionalidad del
-        // producto, no andamiaje de desarrollo— así que tienen que existir en cualquier entorno.
+        // Sin el registro, los componentes no pueden inyectar nada y quedan inalcanzables desde la
+        // aplicación. Se construye en Production a propósito: los servicios del dominio NO dependen de
+        // la doble condición de R-01 —el alta, el listado y el saldo son funcionalidad del producto, no
+        // andamiaje de desarrollo— así que tienen que existir en cualquier entorno.
         await using var aplicacion = HostConIdentidad.Construir(
             HostConIdentidad.EntornoDeProduccion, clave: null);
 
@@ -90,6 +90,7 @@ public sealed class FuenteDeTiempoTests
         Assert.NotNull(ambito.ServiceProvider.GetRequiredService<TimeProvider>());
         Assert.NotNull(ambito.ServiceProvider.GetRequiredService<PermisosService>());
         Assert.NotNull(ambito.ServiceProvider.GetRequiredService<SolicitudesService>());
+        Assert.NotNull(ambito.ServiceProvider.GetRequiredService<SaldoService>());
     }
 
     [Fact]

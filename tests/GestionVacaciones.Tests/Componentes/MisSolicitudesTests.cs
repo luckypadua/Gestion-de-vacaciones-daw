@@ -49,6 +49,13 @@ public sealed class MisSolicitudesTests : ContextoDeComponentes
         Services.AddSingleton<TimeProvider>(new TiempoFijo(new DateTimeOffset(2026, 8, 3, 9, 0, 0, TimeSpan.FromHours(-3))));
         Services.AddSingleton<IDbContextFactory<VacacionesDbContext>>(new FabricaQueNadieDebeUsar());
         Services.AddSingleton<PermisosService>();
+
+        // FEAT-001b, Bloque 3: quinta dependencia de SolicitudesService. Se registra igual que en
+        // Program.RegistrarDominio y en ComposicionDeLaPantalla —el ILogger<SolicitudesService> que
+        // pide la sexta lo resuelve Services.AddLogging() de ContextoDeComponentes—: sin este registro,
+        // el contenedor no puede activar SolicitudesService y la resolución revienta antes de que
+        // ningún caso llegue a afirmar nada, en vez de reproducir el escenario que cada test describe.
+        Services.AddSingleton<SaldoService>();
         Services.AddSingleton<SolicitudesService>();
         Services.AddSingleton<EmpleadosService>();
     }

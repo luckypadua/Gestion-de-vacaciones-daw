@@ -220,6 +220,7 @@ public static class Program
 
         servicios.AddScoped<PermisosService>();
         servicios.AddScoped<SolicitudesService>();
+        servicios.AddScoped<SaldoService>();
     }
 
     /// <summary>

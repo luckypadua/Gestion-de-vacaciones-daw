@@ -39,8 +39,36 @@ Registro de los cambios de la **aplicación**. El formato sigue
 
   198 tests, cobertura del 94,6% en líneas y 96,3% en funciones.
 
+- **FEAT-001b — Imputación de días por año calendario, tope anual y saldo.** El tope de 14 días
+  pasa de ser un número implícito a una regla que el sistema hace cumplir, y el empleado ve su
+  saldo del año en curso —y el del otro año, cuando el período elegido cruza el 31 de
+  diciembre— antes de enviar la solicitud.
+
+  - **`ImputacionPorAnio`**, función pura y estática hermana de `CalculadorDeDiasCorridos`: reparte
+    los días de un período entre los años calendario que abarca, delegando siempre el conteo en la
+    misma fórmula que ya persiste `Solicitud.DiasCorridos`.
+  - **`SaldoService`** calcula `SaldoDelAnio` (usados/reservados y disponibles) del año en curso o
+    de hasta dos años consecutivos, filtrando en SQL y repartiendo por año en memoria; nunca se
+    degrada a saldo cero ante un fallo de identidad, de permisos o de persistencia — un cero y un
+    error se ven igual en pantalla y significan lo contrario.
+  - **`TopeAnual.Dias = 14`** es la única declaración del tope en todo el código fuente, verificado
+    por un escaneo estructural que rompe si aparece una segunda.
+  - **El alta hace cumplir el tope:** `SolicitudesService.CrearAsync` valida el saldo de cada año
+    afectado después de las validaciones de fecha existentes y antes de persistir, dentro de una
+    transacción serializable que cierra la carrera entre dos envíos simultáneos del mismo empleado.
+    Un período de más de dos años se rechaza sin consultar la base.
+  - **El saldo en pantalla:** un componente nuevo, antes del formulario de alta, muestra el saldo
+    del año en curso siempre y el del otro año cuando el período lo cruza, con un cuarto estado
+    —sin ninguna cantidad— cuando el cálculo falla. El botón de enviar sigue habilitado solo con
+    las dos fechas presentes: la interfaz muestra el resultado de la regla, nunca la decide.
+  - **Índice `IX_Solicitud_EmpleadoId_Estado_FechaInicio`**, para que el cálculo del saldo no
+    escanee las solicitudes del empleado completas.
+
+  50 tests nuevos sobre los 198 de FEAT-001a (269 en total), cobertura del 95,5% en líneas y 92,8%
+  en ramas sobre el proyecto, 100% sobre el dominio nuevo. SAST PASSED, 0 vulnerabilidades.
+
 ### Fuera de alcance de esta entrega
 
-El tope anual de 14 días y el cálculo del saldo (FEAT-001b), la detección de superposición de
-períodos (FEAT-001c), y la aprobación o rechazo por parte del manager. La verificación de carga
-—p95 < 3 s con 50 concurrentes— queda diferida a un ticket de performance propio.
+La detección de superposición de períodos (FEAT-001c), y la aprobación o rechazo por parte del
+manager. La verificación de carga —p95 < 3 s con 50 concurrentes— queda diferida a un ticket de
+performance propio; este ticket entrega la condición estructural (el índice), no la medición.

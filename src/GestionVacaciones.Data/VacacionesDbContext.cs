@@ -15,6 +15,13 @@ public class VacacionesDbContext : DbContext
     /// <summary>Índice que sirve al listado propio de FR-04.</summary>
     public const string IndiceDelListado = "IX_Solicitud_EmpleadoId_FechaCreacion";
 
+    /// <summary>
+    /// Índice que sirve a la consulta del saldo (NFR-03): sin él, cada cálculo de
+    /// <c>SaldoService</c> escanea las solicitudes del empleado enteras en vez de acotar por estado y
+    /// rango de fechas.
+    /// </summary>
+    public const string IndiceDelSaldo = "IX_Solicitud_EmpleadoId_Estado_FechaInicio";
+
     /// <summary>Índice único del correo, que identifica a la persona en la nómina.</summary>
     public const string IndiceDeCorreoUnico = "IX_Empleado_Correo";
 
@@ -116,6 +123,14 @@ public class VacacionesDbContext : DbContext
             entidad.HasIndex(solicitud => new { solicitud.EmpleadoId, solicitud.FechaCreacion })
                 .HasDatabaseName(IndiceDelListado)
                 .IsDescending(false, true);
+
+            // El índice del saldo (NFR-03): SaldoService filtra por empleado, estado y solapamiento
+            // del período con el rango del año. El índice del listado de arriba no sirve a esa
+            // consulta —no incluye Estado ni FechaInicio—, así que sin este segundo índice cada
+            // cálculo de saldo escanea las solicitudes del empleado enteras. Las tres columnas quedan
+            // ascendentes, que es el orden por defecto y el que pide la consulta.
+            entidad.HasIndex(solicitud => new { solicitud.EmpleadoId, solicitud.Estado, solicitud.FechaInicio })
+                .HasDatabaseName(IndiceDelSaldo);
 
             ConfigurarInvariantesDeNFR04(entidad);
         });

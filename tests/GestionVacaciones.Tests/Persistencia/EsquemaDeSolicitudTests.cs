@@ -1,6 +1,9 @@
 using GestionVacaciones.Data;
 using GestionVacaciones.Data.Entidades;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace GestionVacaciones.Tests.Persistencia;
@@ -170,6 +173,90 @@ public sealed class EsquemaDeSolicitudTests
         Assert.Equal(new[] { "EmpleadoId:0", "FechaCreacion:1" }, columnas);
     }
 
+    /// <summary>
+    /// Nombre de la migración inicial, previa a la de este bloque. Es el destino de la reversión que
+    /// <see cref="La_migracion_revierte_dejando_el_esquema_anterior"/> ejercita. Vive acá como
+    /// literal porque es un hecho del historial de migraciones, no del modelo: no hay una constante
+    /// del lado de producción a la que atarlo.
+    /// </summary>
+    private const string NombreDeLaMigracionInicial = "20260802014814_InicialV2";
+
+    [Fact]
+    public async Task El_indice_del_saldo_existe_con_sus_columnas_y_su_orden()
+    {
+        // El saldo filtra por empleado, estado y rango de fechas (NFR-03): sin este índice, cada
+        // cálculo de SaldoService escanea las solicitudes del empleado enteras.
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+        await using var contexto = _baseDeDatos.CrearContexto();
+
+        var columnas = await ColumnasDelIndiceAsync(contexto, VacacionesDbContext.IndiceDelSaldo);
+
+        Assert.Equal(new[] { "EmpleadoId:0", "Estado:0", "FechaInicio:0" }, columnas);
+    }
+
+    [Fact]
+    public async Task Las_check_constraints_siguen_siendo_las_mismas_cuatro()
+    {
+        // El Block 5 solo agrega un índice: la imputación por año es un dato derivado de
+        // FechaInicio/FechaFin y no se persiste, así que no hay una quinta constraint que agregar.
+        // Confirmación explícita del bloque, distinta de
+        // Las_cuatro_check_constraints_de_NFR_04_existen_en_la_base (que sigue verde sin tocarla).
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+        await using var contexto = _baseDeDatos.CrearContexto();
+
+        var existentes = await ObtenerCheckConstraintsAsync(contexto);
+
+        Assert.Equal(
+            new[]
+            {
+                VacacionesDbContext.DiasCoincidenConPeriodo,
+                VacacionesDbContext.DiasPositivos,
+                VacacionesDbContext.EstadoValido,
+                VacacionesDbContext.PeriodoCoherente,
+            },
+            existentes);
+    }
+
+    [Fact]
+    public async Task La_migracion_revierte_dejando_el_esquema_anterior()
+    {
+        // Camino triste del Block 5: la migración aplica y revierte limpiamente, y la reversión no se
+        // lleva puesta ninguna de las cuatro check constraints que no le pertenecen.
+        _baseDeDatos.SaltearSiNoEstaDisponible();
+        await using var contexto = _baseDeDatos.CrearContexto();
+        var migrador = ObtenerMigrador(contexto);
+
+        try
+        {
+            // Ida: el fixture ya aplicó todas las migraciones al preparar la base, pero se reafirma
+            // acá para que el test no dependa de ese orden implícito.
+            await migrador.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+            Assert.NotEmpty(await ColumnasDelIndiceAsync(contexto, VacacionesDbContext.IndiceDelSaldo));
+
+            // Vuelta: revierte a la migración anterior a la de este bloque.
+            await migrador.MigrateAsync(NombreDeLaMigracionInicial, TestContext.Current.CancellationToken);
+
+            Assert.Empty(await ColumnasDelIndiceAsync(contexto, VacacionesDbContext.IndiceDelSaldo));
+            Assert.Equal(
+                new[]
+                {
+                    VacacionesDbContext.DiasCoincidenConPeriodo,
+                    VacacionesDbContext.DiasPositivos,
+                    VacacionesDbContext.EstadoValido,
+                    VacacionesDbContext.PeriodoCoherente,
+                },
+                await ObtenerCheckConstraintsAsync(contexto));
+        }
+        finally
+        {
+            // Reaplica siempre, incluso si una aserción de arriba falla: los demás tests de esta
+            // colección comparten la misma base y no pueden heredar un esquema a mitad de camino.
+            await migrador.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        Assert.NotEmpty(await ColumnasDelIndiceAsync(contexto, VacacionesDbContext.IndiceDelSaldo));
+    }
+
     [Fact]
     public async Task Las_cuatro_check_constraints_de_NFR_04_existen_en_la_base()
     {
@@ -225,6 +312,36 @@ public sealed class EsquemaDeSolicitudTests
             "datediff", porNombre[VacacionesDbContext.DiasCoincidenConPeriodo], StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Estado", porNombre[VacacionesDbContext.EstadoValido], StringComparison.Ordinal);
     }
+
+    /// <summary>Servicio de migraciones del contexto, para migrar a un destino puntual (Block 5).</summary>
+    private static IMigrator ObtenerMigrador(VacacionesDbContext contexto) =>
+        ((IInfrastructure<IServiceProvider>)contexto.Database).Instance.GetRequiredService<IMigrator>();
+
+    /// <summary>Columnas del índice indicado, en orden, como «Nombre:EsDescendente». Vacío si no existe.</summary>
+    private async Task<List<string>> ColumnasDelIndiceAsync(VacacionesDbContext contexto, string nombreIndice) =>
+        await contexto.Database
+            .SqlQuery<string>($"""
+                SELECT CONCAT(c.name, N':', ic.is_descending_key) AS Value
+                FROM sys.indexes AS i
+                INNER JOIN sys.index_columns AS ic
+                    ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+                INNER JOIN sys.columns AS c
+                    ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                WHERE i.object_id = OBJECT_ID({TablaDeSolicitudes}) AND i.name = {nombreIndice}
+                ORDER BY ic.key_ordinal
+                """)
+            .ToListAsync(TestContext.Current.CancellationToken);
+
+    /// <summary>Nombres de las check constraints de la tabla de solicitudes, en orden alfabético.</summary>
+    private async Task<List<string>> ObtenerCheckConstraintsAsync(VacacionesDbContext contexto) =>
+        await contexto.Database
+            .SqlQuery<string>($"""
+                SELECT name AS Value
+                FROM sys.check_constraints
+                WHERE parent_object_id = OBJECT_ID({TablaDeSolicitudes})
+                ORDER BY name
+                """)
+            .ToListAsync(TestContext.Current.CancellationToken);
 
     private async Task<DbUpdateException> IntentarPersistirAsync(Solicitud solicitud)
     {

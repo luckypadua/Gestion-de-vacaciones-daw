@@ -39,12 +39,24 @@
     }
     else if (_estado == EstadoListado && _empleadoId is int empleado)
     {
-        @* El @key es el empleado, y no es decorativo: sin él Blazor reutiliza la instancia del
-           formulario al cambiar de identidad y solo le actualiza el parámetro, con lo que el período a
-           medio elegir y —peor— el rechazo que recibió el empleado anterior siguen en pantalla bajo la
-           identidad nueva, atribuyéndole a una persona un intento que hizo otra. Con el @key, cambiar
-           de empleado descarta la instancia y la que aparece nace limpia. *@
-        <FormularioDeAlta @key="empleado" EmpleadoId="empleado" OnSolicitudCreada="RecargarAsync" />
+        @* El saldo se muestra ANTES del formulario: es el dato que el empleado necesita para decidir
+           cuántos días pedir (FR-04). Los dos —saldo y formulario— van envueltos en un único <div> con
+           @key="empleado", y no es decorativo: sin él Blazor reutiliza las instancias al cambiar de
+           identidad y solo les actualiza el parámetro, con lo que el saldo de uno, el período a medio
+           elegir y —peor— el rechazo que recibió el empleado anterior siguen en pantalla bajo la
+           identidad nueva, atribuyéndole a una persona un dato o un intento que fue de otra. Con el
+           @key, cambiar de empleado descarta el <div> entero y el que aparece nace limpio.
+
+           La clave va en el <div> envolvente y no en cada componente por separado: SaldoDelEmpleado y
+           FormularioDeAlta son de tipos distintos, y un mismo valor de @key repetido en dos componentes
+           hermanos de tipos distintos deja el árbol de render a merced de un detalle interno del
+           diffing en vez de la identidad declarada. Una única clave sobre el elemento que los contiene
+           evita la ambigüedad sin perder el efecto: los dos se descartan y renacen juntos. *@
+        <div @key="empleado">
+            <SaldoDelEmpleado FechaInicio="_fechaDeInicioDelFormulario" FechaFin="_fechaDeFinDelFormulario" />
+
+            <FormularioDeAlta EmpleadoId="empleado" OnSolicitudCreada="RecargarAsync" OnPeriodoCambiado="ActualizarPeriodo" />
+        </div>
 
         <div class="mt-6">
             <ListadoDeSolicitudes Solicitudes="_solicitudes" />
@@ -82,7 +94,26 @@
     private int? _empleadoId;
     private IReadOnlyList<SolicitudDelListado> _solicitudes = [];
 
+    /// <summary>
+    /// El período que <see cref="FormularioDeAlta"/> tiene elegido ahora mismo, tal como lo comunica su
+    /// <c>OnPeriodoCambiado</c>. Existe únicamente para pasárselo a <c>SaldoDelEmpleado</c> (AC-06): la
+    /// página no lo usa para decidir nada.
+    /// </summary>
+    private DateOnly? _fechaDeInicioDelFormulario;
+    private DateOnly? _fechaDeFinDelFormulario;
+
     protected override Task OnInitializedAsync() => RecargarAsync();
+
+    /// <summary>
+    /// Refleja el período que tiene elegido el formulario, para que <c>SaldoDelEmpleado</c> pueda
+    /// mostrar el saldo del otro año cuando corresponde. No decide nada: solo transporta las dos fechas
+    /// que <see cref="FormularioDeAlta.OnPeriodoCambiado"/> ya comunicó.
+    /// </summary>
+    private void ActualizarPeriodo((DateOnly? Inicio, DateOnly? Fin) periodo)
+    {
+        _fechaDeInicioDelFormulario = periodo.Inicio;
+        _fechaDeFinDelFormulario = periodo.Fin;
+    }
 
     /// <summary>
     /// Resuelve en cuál de las cuatro situaciones está la pantalla y, si corresponde, pide el listado.
@@ -104,6 +135,13 @@
     /// </remarks>
     private async Task RecargarAsync()
     {
+        // El período a medio elegir es DEL EMPLEADO que lo estaba eligiendo (mismo razonamiento que el
+        // @key de FormularioDeAlta): recargar —por cambio de empleado o porque una solicitud se
+        // creó— empieza siempre con la pizarra limpia, para que SaldoDelEmpleado no seguiría mostrando
+        // el saldo del otro año de un período que ya no está en pantalla.
+        _fechaDeInicioDelFormulario = null;
+        _fechaDeFinDelFormulario = null;
+
         try
         {
             // Puede lanzar: fuera de Development el proveedor niega en vez de devolver un empleado por

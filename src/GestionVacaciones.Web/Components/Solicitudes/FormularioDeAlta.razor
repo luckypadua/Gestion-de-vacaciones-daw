@@ -85,6 +85,16 @@
     [Parameter]
     public EventCallback OnSolicitudCreada { get; set; }
 
+    /// <summary>
+    /// Avisa que el período elegido cambió, con las dos fechas tal como quedaron. <b>Solo las
+    /// comunica</b>: no decide si el período es válido ni si alcanza el saldo, eso lo sigue decidiendo
+    /// el servidor (R-10). Quien aloja este formulario lo usa para que
+    /// <c>GestionVacaciones.Web.Components.Solicitudes.SaldoDelEmpleado</c> sepa cuándo pedir el saldo
+    /// del otro año (AC-06).
+    /// </summary>
+    [Parameter]
+    public EventCallback<(DateOnly? Inicio, DateOnly? Fin)> OnPeriodoCambiado { get; set; }
+
     private DateTime? _fechaDeInicio;
     private DateTime? _fechaDeFin;
     private string _mensajeDeError = string.Empty;
@@ -135,19 +145,32 @@
         }
     }
 
-    private void ElegirLaFechaDeInicio(DateTime? fecha) => ElegirFecha(ref _fechaDeInicio, fecha);
+    private Task ElegirLaFechaDeInicio(DateTime? fecha)
+    {
+        _fechaDeInicio = fecha;
+        return TrasElegirFechaAsync();
+    }
 
-    private void ElegirLaFechaDeFin(DateTime? fecha) => ElegirFecha(ref _fechaDeFin, fecha);
+    private Task ElegirLaFechaDeFin(DateTime? fecha)
+    {
+        _fechaDeFin = fecha;
+        return TrasElegirFechaAsync();
+    }
 
     /// <summary>
-    /// Guarda la fecha y borra el mensaje anterior: el rechazo que se estaba mostrando hablaba del
-    /// período viejo, y dejarlo puesto haría creer que el nuevo también fue rechazado.
+    /// Borra el mensaje anterior y avisa del cambio de período. El rechazo que se estaba mostrando
+    /// hablaba del período viejo, y dejarlo puesto haría creer que el nuevo también fue rechazado.
     /// </summary>
-    private void ElegirFecha(ref DateTime? destino, DateTime? fecha)
+    private Task TrasElegirFechaAsync()
     {
-        destino = fecha;
         _mensajeDeError = string.Empty;
+
+        return OnPeriodoCambiado.InvokeAsync((PeriodoInicio, PeriodoFin));
     }
+
+    private DateOnly? PeriodoInicio => _fechaDeInicio is { } inicio ? DateOnly.FromDateTime(inicio) : null;
+
+    private DateOnly? PeriodoFin => _fechaDeFin is { } fin ? DateOnly.FromDateTime(fin) : null;
 
     /// <summary>
     /// Le pide el alta al servidor y muestra lo que este conteste: el literal del PRD si el período se

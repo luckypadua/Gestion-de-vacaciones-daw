@@ -37,6 +37,7 @@ internal static class ComposicionDeLaPantalla
         servicios.AddScoped<EmpleadosService>();
         servicios.AddScoped<PermisosService>();
         servicios.AddScoped<SolicitudesService>();
+        servicios.AddScoped<SaldoService>();
 
         // La composición real de Development, con su doble condición ya satisfecha por el host: acá se
         // registra la implementación que aquel elige, no un sustituto del sustituto.

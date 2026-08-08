@@ -5,7 +5,7 @@
 | Ticket | FEAT-001b |
 | Tracker | none |
 | Date | 2026-08-01 |
-| PRD loops | 0 |
+| PRD loops | 2 |
 
 > **Sub-ticket `b` de FEAT-001** (índice en `prd-FEAT-001.md`), que a su vez recorta
 > `docs/daw/prd/PRD.md` (PRD-001). Los identificadores `RF-xx` / `AC-xx` citados entre paréntesis
@@ -50,6 +50,9 @@ pedir más de los que tiene.
   *(PRD-001 RF-10)*
 - FR-04: El sistema debe mostrar al empleado los días utilizados o reservados y los días disponibles
   del año en curso. *(PRD-001 RF-11, AC-10.3)*
+- FR-05: El sistema debe mostrar además el saldo del otro año afectado cuando el período indicado
+  abarca dos años calendario, de modo que ningún bloqueo se apoye en un saldo que el empleado no
+  tuvo a la vista. *(decisión del ticket, derivada de FR-02 y FR-04)*
 
 ## Non-Functional Requirements
 
@@ -75,11 +78,16 @@ pedir más de los que tiene.
   ese año. *(FR-02)*
 - AC-03: IF el período abarca dos años calendario y supera el tope de 14 días en alguno de ellos,
   THEN THE sistema SHALL impedir el envío y mostrar el mensaje desglosado "No dispones de días
-  suficientes. Tu saldo es de X días en {año1} y de Y en {año2}". *(FR-02)*
+  suficientes. Tu saldo actual es de X días en {año1} y de Y días en {año2}". *(FR-02)*
 - AC-04: THE sistema SHALL calcular el saldo de un empleado en un año calendario como 14 menos la
   suma de los días tomados, aprobados y pendientes imputados a ese año. *(FR-03)*
 - AC-05: WHEN el empleado entra a la pantalla de sus solicitudes, THE sistema SHALL mostrar los días
   utilizados o reservados y los días disponibles del año en curso. *(FR-04)*
+- AC-06: WHEN el período indicado por el empleado abarca fechas de dos años calendario, THE sistema
+  SHALL mostrar, junto al saldo del año en curso, el saldo del otro año afectado. *(FR-05)*
+- AC-07: IF el cálculo del saldo falla, THEN THE sistema SHALL mostrar un estado distinguible de
+  "sin solicitudes" y de "sin empleado seleccionado", sin presentar ninguna cantidad de días, y
+  mantener utilizables el listado y el formulario de alta. *(FR-04)*
 
 ## Out of Scope
 
@@ -100,7 +108,11 @@ pedir más de los que tiene.
 - **El saldo mostrado no coincide con el que bloqueó la solicitud**, porque la imputación por año se
   aplica en un cálculo y no en el otro → mitigación: NFR-01 y NFR-04 confinan tope y cálculo a un
   único punto consumido por ambos caminos, y AC-01 fija el ejemplo numérico que los tests deben
-  reproducir.
+  reproducir. La otra mitad del riesgo no es de cálculo sino de visibilidad —un período a caballo de
+  dos años se bloquea contra dos saldos y la pantalla mostraba uno— y la cubre AC-06.
+- **Un fallo al calcular el saldo se lee como «no te quedan días»**, porque un cero y un error se ven
+  igual en pantalla → mitigación: AC-07 exige un estado distinguible y sin número, en la misma línea
+  que la separación entre «sin identidad», «sin datos» y «error» que ya sostiene la pantalla.
 - **El caso del cruce de año no se prueba** por ser infrecuente, y falla recién el 28 de diciembre
   → mitigación: AC-01 y AC-03 lo describen con fechas concretas, lo que obliga a un test que no
   depende de la fecha real de ejecución.
@@ -119,7 +131,9 @@ pedir más de los que tiene.
   pantalla del empleado y el proveedor de identidad sobre los que este sub-ticket agrega la regla.
   Es requisito previo.
 - **`docs/daw/prd/PRD.md` (PRD-001)** — PRD de producto. El texto literal de AC-02 proviene de su
-  criterio AC-05; el tope de 14 días, de su RF-03.
+  criterio AC-05; el tope de 14 días, de su RF-03. AC-03 es ese mismo mensaje desglosado por año,
+  para el caso de dos años que el PRD-001 no contempla: por eso conserva su redacción palabra por
+  palabra hasta «Tu saldo actual es de X días».
 - **`docs/daw/prd/prd-FEAT-001.md`** — PRD padre e índice de la división.
 - **SQL Server 2022 + Entity Framework Core 10** — consulta de los días ya imputados por año.
   Declarado en `AGENTS.md` → Stack.
