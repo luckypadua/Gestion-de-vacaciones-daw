@@ -1,0 +1,299 @@
+@page "/autorizaciones"
+@using System.Globalization
+@using GestionVacaciones.Data.Services
+@inject SolicitudesService Solicitudes
+@inject ILogger<Autorizaciones> Registro
+
+@* Pantalla de autorizaciones del manager -- o de su designado, FR-05/FR-06--: lista las solicitudes
+   Pendientes de su equipo (Block 4) y permite aprobarlas o rechazarlas desde acá (AC-01, AC-02,
+   AC-07). Solo la alcanza quien MainLayout ya decidió que tiene equipo a cargo, pero la resolución
+   real de acceso la sigue exigiendo el servidor (PermisosService, vía ResolverAsync). *@
+
+<PageTitle>Autorizaciones</PageTitle>
+
+<MudText Typo="Typo.h1" Class="mb-6">Autorizaciones</MudText>
+
+@* El error de UNA resolución no tumba el resto de la pantalla (camino triste de AC-04 por carrera):
+   vive fuera del bloque de abajo para seguir visible aunque el estado cambie al recargar el listado. *@
+@if (_mensajeDeResolucion.Length > 0)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" data-testid="@IdDelErrorDeResolucion">
+        @_mensajeDeResolucion
+    </MudAlert>
+}
+
+@* Las cinco situaciones -- cargando, sin empleado, sin pendientes, con filas, error -- quedan
+   declaradas en un único atributo, mismo patrón que MisSolicitudes.razor. *@
+<div data-estado="@_estado">
+    @if (_estado == EstadoSinEmpleado)
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" data-testid="@IdDelEstadoSinEmpleado">
+            @MensajeSinEmpleado
+        </MudAlert>
+    }
+    else if (_estado == EstadoError)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" data-testid="@IdDelError">
+            @MensajeDeFalloInesperado
+        </MudAlert>
+    }
+    else if (_estado == EstadoVacio)
+    {
+        <MudAlert Severity="Severity.Normal" Variant="Variant.Outlined" data-testid="@IdDelEstadoVacio">
+            No tenés solicitudes pendientes de tu equipo.
+        </MudAlert>
+    }
+    else if (_estado == EstadoListado)
+    {
+        <MudSimpleTable Dense="true" Hover="true" Striped="true">
+            <thead>
+                <tr>
+                    <th scope="col">Empleado</th>
+                    <th scope="col">Período</th>
+                    <th scope="col">Días corridos</th>
+                    <th scope="col">Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var pendiente in _pendientes)
+                {
+                    <tr @key="pendiente.Id" data-testid="@IdDeLaFila" data-solicitud="@pendiente.Id">
+                        <td data-testid="@IdDelEmpleado">@pendiente.NombreDelEmpleado</td>
+                        <td data-testid="@IdDelPeriodo">@Dia(pendiente.FechaInicio) – @Dia(pendiente.FechaFin)</td>
+                        <td data-testid="@IdDeLosDiasCorridos">@pendiente.DiasCorridos</td>
+                        <td>
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Success"
+                                       Size="Size.Small"
+                                       Disabled="@_resolviendo"
+                                       OnClick="() => AprobarAsync(pendiente.Id)"
+                                       data-testid="@IdDelBotonDeAprobar">
+                                Aprobar
+                            </MudButton>
+
+                            @if (_solicitudIdEnRechazo == pendiente.Id)
+                            {
+                                <MudTextField T="string"
+                                              Label="Motivo del rechazo"
+                                              Value="_motivo"
+                                              ValueChanged="ActualizarMotivo"
+                                              Variant="Variant.Outlined"
+                                              Class="mt-2"
+                                              data-testid="@IdDelCampoDeMotivo" />
+
+                                <MudButton Variant="Variant.Filled"
+                                           Color="Color.Error"
+                                           Size="Size.Small"
+                                           Class="mt-2"
+                                           Disabled="@(!PuedeConfirmarRechazo || _resolviendo)"
+                                           OnClick="() => ConfirmarRechazoAsync(pendiente.Id)"
+                                           data-testid="@IdDelBotonDeConfirmarRechazo">
+                                    Confirmar rechazo
+                                </MudButton>
+                            }
+                            else
+                            {
+                                <MudButton Variant="Variant.Outlined"
+                                           Color="Color.Error"
+                                           Size="Size.Small"
+                                           Class="ml-2"
+                                           Disabled="@_resolviendo"
+                                           OnClick="() => AbrirRechazo(pendiente.Id)"
+                                           data-testid="@IdDelBotonDeRechazar">
+                                    Rechazar
+                                </MudButton>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+    }
+</div>
+
+@code {
+    /// <summary>Atributo que publica en qué situación está la pantalla, mismo patrón que MisSolicitudes.</summary>
+    public const string AtributoDelEstado = "data-estado";
+
+    /// <summary>Todavía no se resolvió nada: es el estado del primer render, antes de consultar.</summary>
+    public const string EstadoCargando = "cargando";
+
+    /// <summary>
+    /// Nadie eligió empleado: no hay equipo sobre el que preguntar, mismo criterio y mismo literal que
+    /// <c>MisSolicitudes.EstadoSinEmpleado</c>.
+    /// </summary>
+    public const string EstadoSinEmpleado = "sin-empleado";
+
+    /// <summary>El equipo no tiene ninguna solicitud Pendiente. No es un error.</summary>
+    public const string EstadoVacio = "vacio";
+
+    /// <summary>Hay al menos una solicitud Pendiente del equipo para mostrar.</summary>
+    public const string EstadoListado = "listado";
+
+    /// <summary>Algo falló al consultar el listado.</summary>
+    public const string EstadoError = "error";
+
+    public const string IdDelEstadoSinEmpleado = "sin-empleado-seleccionado";
+
+    public const string IdDelEstadoVacio = "sin-pendientes";
+
+    public const string IdDelError = "error-del-listado";
+
+    /// <summary>
+    /// Marcador del error de UNA resolución -- distinto del error del listado: uno tumba la pantalla
+    /// entera, el otro no debería (camino triste de AC-04 por carrera).
+    /// </summary>
+    public const string IdDelErrorDeResolucion = "error-de-resolucion";
+
+    public const string IdDeLaFila = "fila-pendiente";
+
+    /// <summary>
+    /// Atributo con el identificador de la solicitud de cada fila. Se escribe literal en el marcado
+    /// -- Razor no admite un nombre de atributo calculado --, mismo patrón que ListadoDeSolicitudes.
+    /// </summary>
+    public const string AtributoDelIdentificador = "data-solicitud";
+
+    public const string IdDelEmpleado = "empleado";
+
+    public const string IdDelPeriodo = "periodo";
+
+    public const string IdDeLosDiasCorridos = "dias-corridos-de-la-solicitud";
+
+    public const string IdDelBotonDeAprobar = "aprobar";
+
+    public const string IdDelBotonDeRechazar = "rechazar";
+
+    public const string IdDelCampoDeMotivo = "motivo-del-rechazo";
+
+    public const string IdDelBotonDeConfirmarRechazo = "confirmar-rechazo";
+
+    /// <summary>
+    /// Lo que se muestra en <see cref="EstadoSinEmpleado"/>. Esta pantalla no trae su propio selector
+    /// -- a diferencia de <c>MisSolicitudes.razor</c> -- porque solo la alcanza quien
+    /// <c>MainLayout</c> ya decidió que tiene equipo a cargo; el aviso remite a donde el selector sí
+    /// vive.
+    /// </summary>
+    public const string MensajeSinEmpleado =
+        "No hay ningún empleado seleccionado. Elegí uno en Mis solicitudes para ver las autorizaciones " +
+        "pendientes de su equipo.";
+
+    /// <summary>Genérico: el detalle va al log, nunca a la pantalla (F-SAST-09).</summary>
+    public const string MensajeDeFalloInesperado =
+        "No se pudo cargar el listado de autorizaciones. Volvé a intentarlo en unos minutos.";
+
+    /// <summary>
+    /// Lo que se muestra cuando resolver <b>falla de verdad</b> -- no cuando se rechaza con un motivo de
+    /// negocio, que ya trae el literal del servidor--. Genérico a propósito (F-SAST-09).
+    /// </summary>
+    public const string MensajeDeFalloAlResolver =
+        "No se pudo procesar la resolución. Volvé a intentarlo en unos minutos.";
+
+    private string _estado = EstadoCargando;
+    private IReadOnlyList<SolicitudPendienteDelEquipo> _pendientes = [];
+    private int? _solicitudIdEnRechazo;
+    private string _motivo = string.Empty;
+    private string _mensajeDeResolucion = string.Empty;
+    private bool _resolviendo;
+
+    /// <summary>
+    /// Comodidad del cliente (AC-03): impide confirmar un rechazo sin motivo. El rechazo real lo decide
+    /// el servidor -- este chequeo solo lo anticipa (R-10), sin excepción para este bloque.
+    /// </summary>
+    private bool PuedeConfirmarRechazo => !string.IsNullOrWhiteSpace(_motivo);
+
+    protected override Task OnInitializedAsync() => CargarAsync();
+
+    /// <summary>Pide el listado de pendientes del equipo (Block 4) y resuelve en qué estado queda la pantalla.</summary>
+    /// <remarks>
+    /// <b>«Sin empleado» y «error» no son el mismo estado</b>, aunque los dos lleguen como una
+    /// excepción de <see cref="SolicitudesService.ListarPendientesDelEquipoAsync"/>: la primera es un
+    /// circuito recién abierto que todavía no eligió identidad -- corresponde invitar a elegirla, no un
+    /// cartel de error --, la segunda es un fallo real. Mismo criterio que
+    /// <c>MisSolicitudes.RecargarAsync</c>: el <c>catch</c> de <see cref="SinEmpleadoSeleccionadoException"/>
+    /// va ANTES del genérico, para que no caiga en él.
+    /// </remarks>
+    private async Task CargarAsync()
+    {
+        try
+        {
+            _pendientes = await Solicitudes.ListarPendientesDelEquipoAsync();
+            _estado = _pendientes.Count == 0 ? EstadoVacio : EstadoListado;
+        }
+        catch (SinEmpleadoSeleccionadoException)
+        {
+            _pendientes = [];
+            _estado = EstadoSinEmpleado;
+        }
+        catch (Exception excepcion)
+        {
+            // No es un catch silencioso: queda registrado y en pantalla solo el mensaje genérico
+            // (F-SAST-09). Nada se degrada a lista vacía: ese estado significa otra cosa.
+            Registro.LogError(excepcion, "No se pudo cargar el listado de pendientes del equipo.");
+
+            _pendientes = [];
+            _estado = EstadoError;
+        }
+    }
+
+    private Task AprobarAsync(int solicitudId) => ResolverAsync(solicitudId, aprobar: true, motivo: null);
+
+    private void AbrirRechazo(int solicitudId)
+    {
+        _solicitudIdEnRechazo = solicitudId;
+        _motivo = string.Empty;
+    }
+
+    private void ActualizarMotivo(string valor) => _motivo = valor;
+
+    private Task ConfirmarRechazoAsync(int solicitudId)
+    {
+        if (!PuedeConfirmarRechazo)
+        {
+            // No debería poder llegar acá con el botón deshabilitado; si llega, no hay nada que enviar.
+            return Task.CompletedTask;
+        }
+
+        return ResolverAsync(solicitudId, aprobar: false, motivo: _motivo);
+    }
+
+    /// <summary>
+    /// Le pide la resolución al servidor (Block 3) y recarga el listado. Un rechazo de negocio -- por
+    /// ejemplo, que otra persona ya la resolvió (AC-04) -- muestra el literal que devuelve el servidor
+    /// sin tumbar el resto de la pantalla; un fallo real de verdad muestra el genérico.
+    /// </summary>
+    private async Task ResolverAsync(int solicitudId, bool aprobar, string? motivo)
+    {
+        _resolviendo = true;
+        _mensajeDeResolucion = string.Empty;
+
+        try
+        {
+            var resultado = await Solicitudes.ResolverAsync(solicitudId, aprobar, motivo);
+
+            if (!resultado.FueResuelta)
+            {
+                // El literal del PRD, tal cual llega. Reformularlo acá rompería AC-04.
+                _mensajeDeResolucion = resultado.MensajeDeError;
+            }
+
+            _solicitudIdEnRechazo = null;
+            _motivo = string.Empty;
+
+            // Recarga siempre, se haya resuelto o no: si otra persona ya la resolvió, esta recarga es
+            // lo que saca del listado la fila que había quedado vieja.
+            await CargarAsync();
+        }
+        catch (Exception excepcion)
+        {
+            Registro.LogError(excepcion, "Falló la resolución de la solicitud {SolicitudId}.", solicitudId);
+
+            _mensajeDeResolucion = MensajeDeFalloAlResolver;
+        }
+        finally
+        {
+            _resolviendo = false;
+        }
+    }
+
+    private static string Dia(DateOnly fecha) => fecha.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
+}

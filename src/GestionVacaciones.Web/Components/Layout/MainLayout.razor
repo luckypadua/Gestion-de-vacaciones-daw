@@ -1,4 +1,7 @@
 @inherits LayoutComponentBase
+@using GestionVacaciones.Data.Services
+@inject SolicitudesService Solicitudes
+@inject ILogger<MainLayout> Registro
 
 <MudThemeProvider />
 <MudPopoverProvider />
@@ -6,8 +9,20 @@
 <MudSnackbarProvider />
 
 <MudLayout>
-    <MudAppBar Elevation="1">
+    <MudAppBar Elevation="1" data-estado="@_estado">
         <MudText Typo="Typo.h6">Gestión de Vacaciones</MudText>
+        <MudSpacer />
+        @* FEAT-002 (Bloque 5). Visible SOLO si el dominio contesta que hay equipo a cargo -- nunca por
+           una consulta propia de este componente (ComponentesSinAccesoADatosTests lo refuerza). *@
+        @if (_tieneEquipoACargo)
+        {
+            <MudLink Href="/autorizaciones"
+                     Color="Color.Inherit"
+                     Underline="Underline.None"
+                     data-testid="@IdDelLinkDeAutorizaciones">
+                Autorizaciones
+            </MudLink>
+        }
     </MudAppBar>
     <MudMainContent>
         <MudContainer MaxWidth="MaxWidth.Large" Class="mt-6">
@@ -15,3 +30,43 @@
         </MudContainer>
     </MudMainContent>
 </MudLayout>
+
+@code {
+    /// <summary>Atributo que publica si ya se resolvió la visibilidad del link (para los tests).</summary>
+    public const string AtributoDelEstado = "data-estado";
+
+    /// <summary>Todavía no se preguntó, o se está preguntando, si hay equipo a cargo.</summary>
+    public const string EstadoCargando = "menu-cargando";
+
+    /// <summary>Ya se resolvió: el link aparece o no según <see cref="_tieneEquipoACargo"/>.</summary>
+    public const string EstadoListo = "menu-listo";
+
+    public const string IdDelLinkDeAutorizaciones = "link-autorizaciones";
+
+    private string _estado = EstadoCargando;
+    private bool _tieneEquipoACargo;
+
+    /// <summary>
+    /// Pregunta al dominio si el empleado actual tiene equipo a cargo (Block 5, SolicitudesService).
+    /// Cualquier fallo -- sin identidad, base caída -- deja el link oculto: mostrarlo ante una duda
+    /// llevaría a alguien a una pantalla que el servidor de todos modos le va a negar.
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _tieneEquipoACargo = await Solicitudes.TieneEquipoACargoAsync();
+        }
+        catch (Exception excepcion)
+        {
+            // No es un catch silencioso: queda registrado y el link simplemente no aparece.
+            Registro.LogError(excepcion, "No se pudo determinar si el empleado actual tiene equipo a cargo.");
+
+            _tieneEquipoACargo = false;
+        }
+        finally
+        {
+            _estado = EstadoListo;
+        }
+    }
+}

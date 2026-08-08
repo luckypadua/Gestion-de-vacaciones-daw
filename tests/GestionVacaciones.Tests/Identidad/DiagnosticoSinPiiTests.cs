@@ -93,7 +93,11 @@ public sealed class DiagnosticoSinPiiTests
             FechaFin: new DateOnly(2027, 3, 29),
             DiasCorridos: 13,
             Estado: EstadoSolicitud.Pendiente,
-            FechaCreacion: new DateTimeOffset(2027, 1, 8, 10, 30, 0, TimeSpan.FromHours(-3)));
+            FechaCreacion: new DateTimeOffset(2027, 1, 8, 10, 30, 0, TimeSpan.FromHours(-3)),
+            // FEAT-002 (Bloque 3): campos nuevos de la resolución. Esta solicitud sigue Pendiente, así
+            // que los dos son null -- el mismo estado que exige CK_Solicitud_ResolucionCoherente.
+            ResueltoPorId: null,
+            MotivoDeRechazo: null);
 
         var descripcion = solicitud.ToString();
 
@@ -204,6 +208,65 @@ public sealed class DiagnosticoSinPiiTests
             .Where(campo => campo is { IsLiteral: true, IsInitOnly: false })
             .Select(campo => campo.GetRawConstantValue())
             .OfType<string>()];
+
+    [Fact]
+    public void El_ToString_de_una_resolucion_no_lleva_nada_mas_que_el_resultado_y_el_motivo()
+    {
+        // Hallazgo 3 de VERIFY (R-12). ResultadoDeLaResolucion (FEAT-002, Bloque 3) no lleva ningún
+        // identificador de la solicitud ni de la persona: solo FueResuelta y, si se rechazó, el
+        // literal del PRD que lo motivó. Mismo criterio que ResultadoDelAlta.ToString(), con la misma
+        // pareja de asertos: la resolución exitosa (mismo patrón que "un alta creada") y el rechazo,
+        // recorriendo los literales declarados (mismo patrón que "un rechazo").
+        var resuelta = ResultadoDeLaResolucion.Resuelta();
+        Assert.Equal($"{nameof(ResultadoDeLaResolucion)} {{ FueResuelta = true }}", resuelta.ToString());
+
+        var literales = LiteralesDeRechazo();
+
+        // Sin esto, un ErroresDeSolicitud vacío o renombrado dejaría el bucle sin iteraciones y el
+        // test pasaría en verde sin haber comprobado nada.
+        Assert.NotEmpty(literales);
+
+        foreach (var literal in literales)
+        {
+            var descripcion = ResultadoDeLaResolucion.Rechazada(literal).ToString();
+
+            // El motivo viaja entero: es lo que hace útil al diagnóstico.
+            Assert.Contains(literal, descripcion, StringComparison.Ordinal);
+
+            // Y alrededor del motivo no queda ningún dígito -- no hay ningún identificador de la
+            // solicitud ni de la persona que este tipo pueda filtrar.
+            var alrededorDelLiteral = descripcion.Replace(literal, string.Empty, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(alrededorDelLiteral, character => char.IsDigit(character));
+        }
+    }
+
+    [Fact]
+    public void El_ToString_de_SolicitudPendienteDelEquipo_no_lleva_el_nombre_del_empleado()
+    {
+        // Hallazgo 3 de VERIFY (R-12). SolicitudPendienteDelEquipo (FEAT-002, Bloque 4) es la única
+        // proyección del dominio con un nombre entre sus propiedades -- ver su propio remarks --, así
+        // que es el caso más sensible de esta clase: sin el override a mano, el ToString() autogenerado
+        // del record imprimiría NombreDelEmpleado tal cual.
+        var pendiente = new SolicitudPendienteDelEquipo(
+            Id: 931,
+            EmpleadoId: 4321,
+            NombreDelEmpleado: NombreInconfundible,
+            FechaInicio: new DateOnly(2027, 3, 17),
+            FechaFin: new DateOnly(2027, 3, 29),
+            DiasCorridos: 13,
+            FechaCreacion: new DateTimeOffset(2027, 1, 8, 10, 30, 0, TimeSpan.FromHours(-3)));
+
+        var descripcion = pendiente.ToString();
+
+        // El nombre es PII (R-12): sin el override, esta línea lo encuentra.
+        Assert.DoesNotContain(NombreInconfundible, descripcion, StringComparison.Ordinal);
+
+        // La contracara imprescindible, mismo criterio que el resto de la clase: los identificadores
+        // SÍ tienen que estar, para que el diagnóstico siga siendo útil.
+        Assert.Contains("931", descripcion, StringComparison.Ordinal);
+        Assert.Contains("4321", descripcion, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void El_ToString_de_una_identidad_sin_seleccionar_lo_dice_en_vez_de_lanzar()

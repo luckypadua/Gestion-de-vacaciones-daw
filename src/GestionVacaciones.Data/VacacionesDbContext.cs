@@ -33,6 +33,12 @@ public class VacacionesDbContext : DbContext
     public const string DiasCoincidenConPeriodo = "CK_Solicitud_DiasCoincidenConPeriodo";
     public const string EstadoValido = "CK_Solicitud_EstadoValido";
 
+    /// <summary>
+    /// Quinta check constraint, desde el Bloque 1 de FEAT-002: ata el estado a los tres datos de
+    /// resolución (<c>ResueltoPorId</c>, <c>FechaResolucion</c>, <c>MotivoDeRechazo</c>).
+    /// </summary>
+    public const string ResolucionCoherente = "CK_Solicitud_ResolucionCoherente";
+
     /// <summary>Longitud máxima del nombre del empleado.</summary>
     private const int LargoDelNombre = 200;
 
@@ -41,6 +47,12 @@ public class VacacionesDbContext : DbContext
     /// el límite que fija el RFC 5321 para el camino de reversa.
     /// </summary>
     private const int LargoDelCorreo = 320;
+
+    /// <summary>
+    /// Longitud máxima del motivo de rechazo: generosa para texto libre sin ser ilimitada. Sin cota
+    /// explícita en el PRD (FEAT-002).
+    /// </summary>
+    private const int LargoDelMotivoDeRechazo = 1000;
 
     public VacacionesDbContext(DbContextOptions<VacacionesDbContext> opciones)
         : base(opciones)
@@ -112,12 +124,26 @@ public class VacacionesDbContext : DbContext
 
             entidad.Property(solicitud => solicitud.FechaCreacion).IsRequired();
 
+            // Las tres columnas de resolución (FEAT-002, Bloque 1) son NULL mientras la solicitud
+            // está Pendiente: ninguna es IsRequired().
+            entidad.Property(solicitud => solicitud.MotivoDeRechazo)
+                .HasMaxLength(LargoDelMotivoDeRechazo);
+
             // El historial de una persona no se borra en silencio al darla de baja: la trazabilidad
             // de quién pidió qué y cuándo es parte del dominio. Si alguna vez hay que eliminar un
             // empleado, sus solicitudes se resuelven antes, a mano y a la vista.
             entidad.HasOne(solicitud => solicitud.Empleado)
                 .WithMany()
                 .HasForeignKey(solicitud => solicitud.EmpleadoId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            // Mismo criterio que la FK de arriba: quien resolvió no se borra en cascada. Con
+            // WithMany() sin navegación inversa —Empleado no tiene una colección de "solicitudes que
+            // resolví"— porque ya hay otra FK de Solicitud hacia Empleado (EmpleadoId) con la que EF
+            // no podría emparejar por convención.
+            entidad.HasOne(solicitud => solicitud.ResueltoPor)
+                .WithMany()
+                .HasForeignKey(solicitud => solicitud.ResueltoPorId)
                 .OnDelete(DeleteBehavior.NoAction);
 
             // El índice del listado de FR-04: filtra por empleado y ordena descendente por fecha de
@@ -139,15 +165,17 @@ public class VacacionesDbContext : DbContext
         });
 
     /// <summary>
-    /// Las cuatro check constraints que exige NFR-04. Son <b>defensa en profundidad</b>: la
-    /// validación de negocio vive en los servicios, y si una fila inválida llega hasta acá es que
-    /// aquella falló. La diferencia entre validar solo en C# y validar también acá es que un bug en
-    /// C# —o una carga externa, o un script— no puede corromper la invariante.
+    /// Las cinco check constraints de <c>Solicitud</c>: las cuatro que exige NFR-04 (PRD-001) más
+    /// <see cref="ResolucionCoherente"/>, que suma FEAT-002 en su Bloque 1. Son <b>defensa en
+    /// profundidad</b>: la validación de negocio vive en los servicios, y si una fila inválida llega
+    /// hasta acá es que aquella falló. La diferencia entre validar solo en C# y validar también acá
+    /// es que un bug en C# —o una carga externa, o un script— no puede corromper la invariante.
     /// </summary>
     /// <remarks>
-    /// Tres de las cuatro no son aislables entre sí: <see cref="PeriodoCoherente"/> se deduce de las
-    /// otras dos y <see cref="DiasPositivos"/> también. Se escriben las tres igual porque cada una
-    /// nombra su invariante, y el mensaje de SQL Server que llega al log dice cuál se violó.
+    /// Tres de las cuatro originales no son aislables entre sí: <see cref="PeriodoCoherente"/> se
+    /// deduce de las otras dos y <see cref="DiasPositivos"/> también. Se escriben las tres igual
+    /// porque cada una nombra su invariante, y el mensaje de SQL Server que llega al log dice cuál
+    /// se violó.
     /// </remarks>
     private static void ConfigurarInvariantesDeNFR04(
         Microsoft.EntityFrameworkCore.Metadata.Builders.EntityTypeBuilder<Solicitud> entidad) =>
@@ -167,5 +195,15 @@ public class VacacionesDbContext : DbContext
             // estado. El rango literal está atado al enum por un test —si aparece un cuarto estado
             // sin tocar esta línea, la suite lo dice acá y no en producción—.
             tabla.HasCheckConstraint(EstadoValido, "[Estado] BETWEEN 0 AND 2");
+
+            // FEAT-002, Bloque 1: ata el estado a los tres datos de resolución. Forma booleana
+            // (disyunción de conjunciones), mismo estilo que las cuatro anteriores, sin CASE. Los
+            // literales 0/1/2 son los mismos que ya usa EstadoValido para
+            // Pendiente/Aprobada/Rechazada.
+            tabla.HasCheckConstraint(
+                ResolucionCoherente,
+                "([Estado] = 0 AND [ResueltoPorId] IS NULL AND [FechaResolucion] IS NULL AND [MotivoDeRechazo] IS NULL) " +
+                "OR ([Estado] = 1 AND [ResueltoPorId] IS NOT NULL AND [FechaResolucion] IS NOT NULL AND [MotivoDeRechazo] IS NULL) " +
+                "OR ([Estado] = 2 AND [ResueltoPorId] IS NOT NULL AND [FechaResolucion] IS NOT NULL AND [MotivoDeRechazo] IS NOT NULL)");
         });
 }
