@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>GestionVacaciones.Web</RootNamespace>
+    <AssemblyName>GestionVacaciones.Web</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <!-- La cadena de conexión de desarrollo vive en user-secrets, nunca en el repositorio (R-02). -->
+    <UserSecretsId>gestion-vacaciones-v2-web</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MudBlazor" Version="9.7.0" />
+    <!--
+      Las herramientas de `dotnet ef` exigen que el paquete esté referenciado en el proyecto de
+      ARRANQUE, no solo donde vive el contexto: sin esto,
+      `dotnet ef migrations add … -s src/GestionVacaciones.Web` aborta con «Your startup project
+      doesn't reference Microsoft.EntityFrameworkCore.Design». En Data la referencia lleva
+      PrivateAssets=all, así que no llega hasta acá por vía transitiva.
+
+      Acá se restringe además IncludeAssets para que Web NO pueda compilar contra los tipos de
+      tiempo de diseño: el paquete entra como herramienta de build y nada más. Con PrivateAssets=all
+      tampoco fluye al artefacto publicado.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      El appsettings de desarrollo NO viaja en el artefacto publicado (mitigación R-01, capa 1).
+
+      Este archivo se cargaba solo en Development, así que parecía inofensivo, y sin embargo se
+      copiaba al publicado: un host productivo con ASPNETCORE_ENVIRONMENT mal puesta lo leía y de ahí
+      salía la segunda condición que habilitaba el sustituto de identidad sin credencial. Las dos
+      condiciones que el modelo de amenazas describe como independientes eran, en los hechos, una
+      sola variable de entorno.
+
+      La clave se mudó a Properties/launchSettings.json —versionado, para que un clon nuevo conserve
+      la experiencia de desarrollo, y no publicado—. Esta línea es la segunda barrera de la misma
+      capa: cubre lo que alguien agregue mañana a este archivo sin acordarse de aquella discusión.
+    -->
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GestionVacaciones.Data\GestionVacaciones.Data.csproj" />
+  </ItemGroup>
+
+</Project>

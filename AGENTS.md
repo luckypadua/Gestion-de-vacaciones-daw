@@ -70,10 +70,27 @@ Leave it empty and that validation has nothing to compare against, so it stops b
 
 - **Folder structure:**
   - `src/GestionVacaciones.slnx` — solución (formato `.slnx`, el default de .NET 10)
+  - `src/GestionVacaciones.Data/` — dominio y persistencia
+    - `Entidades/` — `Empleado`, `Solicitud`, `EstadoSolicitud`
+    - `Migrations/` — migraciones de EF Core; **son ellas** las que definen el esquema
+    - `Services/` — reglas de negocio y única vía de acceso a datos: `SolicitudesService`,
+      `PermisosService`, `EmpleadosService`, `CalculadorDeDiasCorridos`, `ErroresDeSolicitud`,
+      `IEmpleadoActualProvider`
+    - raíz — `VacacionesDbContext`, `VacacionesDbContextFactory` (tiempo de diseño), `SeedDatos`
   - `src/GestionVacaciones.Web/` — frontend Blazor + MudBlazor y punto de arranque
-  - `src/GestionVacaciones.Data/` — entidades, `VacacionesDbContext`, migraciones y reglas de negocio (`Services/`)
-  - `tests/GestionVacaciones.Tests/` — proyectos de test
-  - `Directory.Build.props` — propiedades comunes (`net10.0`, C# 14, nullable, `TreatWarningsAsErrors`)
+    - `Components/` — `App.razor`, `Routes.razor`, `_Imports.razor`
+      - `Layout/` — `MainLayout.razor`
+      - `Pages/` — páginas enrutadas (`MisSolicitudes.razor`, ruta `/`)
+      - `Solicitudes/` — componentes del alta y del listado
+      - `Identidad/` — componentes de la elección del empleado actual
+    - `Configuracion/` — resolución de la cadena de conexión
+    - `Identidad/` — implementaciones de `IEmpleadoActualProvider` y su verificación de arranque
+    - `wwwroot/`, `Properties/`
+  - `tests/GestionVacaciones.Tests/` — proyecto de test único, con una subcarpeta por preocupación:
+    `Andamiaje/`, `Persistencia/`, `Identidad/`, `Dominio/`, `Componentes/`. El test vive **junto a
+    la preocupación que verifica**, no junto al tipo que la implementa.
+  - `Directory.Build.props` — propiedades comunes (`net10.0`, C# 14, nullable, `TreatWarningsAsErrors`).
+    Vive en la **raíz** y no en `src/`: desde `src/` el proyecto de `tests/` no lo heredaría.
 - **Layer separation:** la UI Blazor no consulta la base directamente; pasa siempre por los servicios
   de `GestionVacaciones.Data/Services/`. Quién puede ver o resolver las solicitudes de quién se
   decide **solo** en `PermisosService`, en ningún otro lugar.
@@ -93,7 +110,24 @@ Leave it empty and that validation has nothing to compare against, so it stops b
 - **Naming:** convenciones estándar de C#/.NET — tipos, archivos `.cs` y componentes `.razor` en
   PascalCase; miembros privados en `_camelCase`.
 - **Dependencies:** no incorporar librerías nuevas sin justificarlo en la spec; el UI se construye
-  con MudBlazor, no con otro sistema de componentes.
+  con MudBlazor, no con otro sistema de componentes. Las versiones se fijan **exactas**: con
+  `TreatWarningsAsErrors` activo, cualquier advertencia de compatibilidad rompe el build.
+
+  **9 referencias, 8 paquetes** (`Microsoft.EntityFrameworkCore.Design` se referencia dos veces):
+
+  | Paquete | Versión | Proyecto | Para qué |
+  |---|---|---|---|
+  | `MudBlazor` | 9.7.0 | Web | El sistema de componentes del UI. No hay otro. |
+  | `Microsoft.EntityFrameworkCore.SqlServer` | 10.0.10 | Data | Proveedor de SQL Server 2022. |
+  | `Microsoft.EntityFrameworkCore.Design` | 10.0.10 | Data y Web, con `PrivateAssets="all"` | `dotnet ef migrations`. `dotnet ef` la exige también en el proyecto de **arranque**. |
+  | `xunit.v3` | 3.2.2 | Tests | Framework de test. |
+  | `Microsoft.NET.Test.Sdk` | 18.8.1 | Tests | Requerido por el runner. |
+  | `xunit.runner.visualstudio` | 3.1.5 | Tests | Descubrimiento de tests. |
+  | `bunit` | 2.8.6 | Tests | Renderiza componentes Blazor en memoria. **No abre navegador**: la compatibilidad entre navegadores se verifica a mano. |
+  | `coverlet.collector` | 10.0.1 | Tests | Sin él, `dotnet test --collect:"XPlat Code Coverage"` no emite ningún número de cobertura. |
+
+  La herramienta global `dotnet-ef` tiene que estar en **10.0.10 o superior**: con la 10.0.9 las
+  migraciones no se generan contra estos paquetes.
 
 ---
 
@@ -120,6 +154,24 @@ wrong once.
 - **Nunca** registrar el `DbContext` con `AddDbContext` para acceso a datos (ver el porqué en
   *Architecture conventions*).
 - **No** usar `HasData` para la data de desarrollo: las relaciones manager/designado son circulares.
+- **Nunca** declarar en `appsettings.Development.json` una clave que habilite algo. Ese archivo **viaja
+  en el artefacto publicado**, y solo se carga cuando el entorno ya es `Development`: una clave ahí no
+  es una segunda condición, es una consecuencia de la primera. Ya pasó una vez —la clave que habilita
+  el sustituto de identidad sin credencial— y convertía un `ASPNETCORE_ENVIRONMENT` mal puesto en una
+  suplantación completa. Las claves de desarrollo van en `Properties/launchSettings.json`, que está
+  versionado y **no** se publica.
+- **No** dar por independientes dos condiciones sin comprobar de dónde sale cada una. Si las dos las
+  aporta la configuración, las controla quien controla el entorno de ejecución: son una sola.
+- **Nunca** usar `MarkupString` en el proyecto Web: es la vía por la que entra HTML sin escapar. La
+  prohibición es total, no «solo con entrada de usuario»: distinguir cuál es cuál exige leer el
+  código, y esa lectura es la que no ocurre en la revisión apurada.
+- **No** darle reloj propio a un componente `.razor` —ni `TimeProvider` inyectado ni `DateTime.Today`—
+  ni reimplementar en el marcado una regla que valida el servidor. Un formulario que decide por su
+  cuenta si un período sirve deja la regla esquivable desde el cliente y divergente del servicio.
+  Mostrar el resultado de una regla es tarea de la interfaz; decidirla, no.
+- **No** distinguir «sin identidad», «sin datos» y «error» solo en el código: las tres se ven
+  parecidas en pantalla y significan cosas opuestas. Una lista vacía devuelta ante un fallo le dice
+  al empleado «no enviaste solicitudes» mientras la base está caída.
 - **No** deshabilitar validaciones de seguridad (TLS, autenticación, roles).
 - **No** mezclar versiones distintas de .NET, EF Core o SQL Server.
 - **Nunca** usar `dotnet run` en producción: se publica con `dotnet publish -c Release`, con HTTPS y

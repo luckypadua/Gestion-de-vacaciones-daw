@@ -15,3 +15,18 @@ __pycache__/
 .daw-sessions/
 .daw-journal.jsonl
 # END DAW
+
+# .NET / GestionVacaciones (FEAT-001a)
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+artifacts/
+*.mdf
+*.ldf
+# Configuración local con credenciales: nunca se versiona (R-02)
+appsettings.*.local.json
+
+# Ruido de Visual Studio: instrucciones de Copilot que la IDE regenera dentro de src/
+src/.github/

@@ -1,0 +1,146 @@
+@page "/"
+@using GestionVacaciones.Data.Services
+@using GestionVacaciones.Web.Components.Identidad
+@using GestionVacaciones.Web.Components.Solicitudes
+@inject IEmpleadoActualProvider EmpleadoActual
+@inject SolicitudesService Solicitudes
+@inject ILogger<MisSolicitudes> Registro
+
+@* Pantalla propia del empleado: registra una solicitud y ve las que ya envió (AC-01 a AC-05, AC-07). *@
+
+<PageTitle>Mis solicitudes</PageTitle>
+
+<MudText Typo="Typo.h1" Class="mb-6">Mis solicitudes</MudText>
+
+@* El selector solo existe donde el proveedor de identidad contesta que se puede elegir. Fuera de
+   desarrollo contesta que no, y entonces esta pantalla no ofrece ninguna forma de ser otra persona
+   (R-01). *@
+@if (EmpleadoActual.PermiteElegirEmpleado)
+{
+    <div class="mb-6">
+        <SelectorDeEmpleado OnEmpleadoCambiado="RecargarAsync" />
+    </div>
+}
+
+@* Las tres situaciones que se ven parecidas —sin empleado, sin solicitudes y error— quedan
+   declaradas en un único atributo, para que sean distinguibles también desde afuera. *@
+<div data-estado="@_estado">
+    @if (_estado == EstadoSinEmpleado)
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+            Elegí un empleado para ver sus solicitudes y registrar una nueva.
+        </MudAlert>
+    }
+    else if (_estado == EstadoError)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" data-testid="@IdDelError">
+            @MensajeDeFalloInesperado
+        </MudAlert>
+    }
+    else if (_estado == EstadoListado && _empleadoId is int empleado)
+    {
+        @* El @key es el empleado, y no es decorativo: sin él Blazor reutiliza la instancia del
+           formulario al cambiar de identidad y solo le actualiza el parámetro, con lo que el período a
+           medio elegir y —peor— el rechazo que recibió el empleado anterior siguen en pantalla bajo la
+           identidad nueva, atribuyéndole a una persona un intento que hizo otra. Con el @key, cambiar
+           de empleado descarta la instancia y la que aparece nace limpia. *@
+        <FormularioDeAlta @key="empleado" EmpleadoId="empleado" OnSolicitudCreada="RecargarAsync" />
+
+        <div class="mt-6">
+            <ListadoDeSolicitudes Solicitudes="_solicitudes" />
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>
+    /// Atributo que publica en qué situación está la pantalla. Existe porque las tres que no muestran
+    /// solicitudes se parecen mucho y significan cosas opuestas: sin él, distinguirlas desde afuera
+    /// obligaría a inferirlas de qué textos aparecen, que es exactamente cómo se terminan confundiendo.
+    /// </summary>
+    public const string AtributoDelEstado = "data-estado";
+
+    /// <summary>Todavía no se resolvió nada. Es el estado del primer render, antes de consultar.</summary>
+    public const string EstadoCargando = "cargando";
+
+    /// <summary>Nadie eligió empleado: corresponde el selector, no un listado vacío.</summary>
+    public const string EstadoSinEmpleado = "sin-empleado";
+
+    /// <summary>Hay empleado y sus solicitudes se consultaron. El listado puede estar vacío: eso lo dice él.</summary>
+    public const string EstadoListado = "listado";
+
+    /// <summary>Algo falló al consultar. Ni «no tenés solicitudes» ni «elegí un empleado».</summary>
+    public const string EstadoError = "error";
+
+    public const string IdDelError = "error-del-listado";
+
+    /// <summary>Genérico: el detalle va al log, nunca a la pantalla (F-SAST-09).</summary>
+    public const string MensajeDeFalloInesperado =
+        "No se pudieron cargar tus solicitudes. Volvé a intentarlo en unos minutos.";
+
+    private string _estado = EstadoCargando;
+    private int? _empleadoId;
+    private IReadOnlyList<SolicitudDelListado> _solicitudes = [];
+
+    protected override Task OnInitializedAsync() => RecargarAsync();
+
+    /// <summary>
+    /// Resuelve en cuál de las cuatro situaciones está la pantalla y, si corresponde, pide el listado.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>La falta de identidad se pregunta, no se captura.</b> «Todavía no elegiste a nadie» es un
+    /// estado legítimo del circuito recién abierto, y <c>IdentidadDelEmpleado</c> lo contesta en vez de
+    /// devolver <c>null</c>: preguntarlo evita usar una excepción como control de flujo. El
+    /// <c>catch</c> de <see cref="SinEmpleadoSeleccionadoException"/> queda igual, por si una
+    /// implementación futura del proveedor prefiere negar a contestar; sin él, ese caso caería en el
+    /// genérico y la pantalla mostraría un error donde corresponde el selector.
+    /// </para>
+    /// <para>
+    /// <b>Nada se degrada a lista vacía.</b> Ni la falta de identidad ni el fallo: una lista vacía
+    /// afirma «no enviaste solicitudes», que es una afirmación sobre datos que en los dos casos nadie
+    /// llegó a consultar.
+    /// </para>
+    /// </remarks>
+    private async Task RecargarAsync()
+    {
+        try
+        {
+            // Puede lanzar: fuera de Development el proveedor niega en vez de devolver un empleado por
+            // defecto (AC-06). Ese caso cae en el catch genérico, como corresponde: no es «elegí un
+            // empleado», es una aplicación sin identidad configurada.
+            var identidad = EmpleadoActual.Identidad;
+
+            if (!identidad.HayEmpleadoSeleccionado)
+            {
+                _empleadoId = null;
+                _solicitudes = [];
+                _estado = EstadoSinEmpleado;
+
+                return;
+            }
+
+            _empleadoId = identidad.Id;
+            _solicitudes = await Solicitudes.ListarPropiasAsync();
+            _estado = EstadoListado;
+        }
+        catch (SinEmpleadoSeleccionadoException)
+        {
+            _empleadoId = null;
+            _solicitudes = [];
+            _estado = EstadoSinEmpleado;
+        }
+        catch (Exception excepcion)
+        {
+            // No es un catch silencioso: queda registrado con el identificador del empleado y nada más
+            // —ni nombre ni correo (R-12)—, y en pantalla solo el mensaje genérico (F-SAST-09).
+            Registro.LogError(
+                excepcion,
+                "No se pudo cargar el listado de solicitudes del empleado {EmpleadoId}.",
+                _empleadoId);
+
+            _solicitudes = [];
+            _estado = EstadoError;
+        }
+    }
+}

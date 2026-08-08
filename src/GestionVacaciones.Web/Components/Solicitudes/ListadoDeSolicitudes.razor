@@ -1,0 +1,87 @@
+@using System.Globalization
+@using GestionVacaciones.Data.Services
+
+@* Las solicitudes propias del empleado, tal como las entrega SolicitudesService (AC-05). *@
+
+@if (Solicitudes.Count == 0)
+{
+    @* El estado vacío es EXPLÍCITO y tiene su propio marcador. «No enviaste solicitudes» es una
+       respuesta legítima y frecuente; una tabla sin filas dejaría la pantalla igual que un error
+       tragado en silencio, y son dos cosas distintas. *@
+    <MudAlert Severity="Severity.Normal" Variant="Variant.Outlined" data-testid="@IdDelEstadoVacio">
+        Todavía no enviaste solicitudes.
+    </MudAlert>
+}
+else
+{
+    <MudSimpleTable Dense="true" Hover="true" Striped="true">
+        <thead>
+            <tr>
+                <th scope="col">Período</th>
+                <th scope="col">Días corridos</th>
+                <th scope="col">Estado</th>
+                <th scope="col">Enviada</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var solicitud in Solicitudes)
+            {
+                <tr @key="solicitud.Id" data-testid="@IdDeLaFila" data-solicitud="@solicitud.Id">
+                    <td data-testid="@IdDelPeriodo">@Dia(solicitud.FechaInicio) – @Dia(solicitud.FechaFin)</td>
+                    <td data-testid="@IdDeLosDiasCorridos">@solicitud.DiasCorridos</td>
+                    <td data-testid="@IdDelEstado">@solicitud.Estado</td>
+                    <td>@Instante(solicitud.FechaCreacion)</td>
+                </tr>
+            }
+        </tbody>
+    </MudSimpleTable>
+}
+
+@code {
+    /// <summary>Marcador de cada fila. Es lo que permite contarlas y leer su orden desde un test.</summary>
+    public const string IdDeLaFila = "fila-de-solicitud";
+
+    /// <summary>
+    /// Atributo con el identificador de la solicitud de cada fila. Se escribe literal en el marcado
+    /// —Razor no admite un nombre de atributo calculado— y la constante existe para que quien lo
+    /// consulte no lo repita a mano.
+    /// </summary>
+    public const string AtributoDelIdentificador = "data-solicitud";
+
+    public const string IdDelPeriodo = "periodo";
+
+    /// <summary>
+    /// Distinto del <c>dias-corridos</c> del formulario a propósito: los dos aparecen en la misma
+    /// pantalla y un marcador compartido haría que una consulta encontrara el del otro.
+    /// </summary>
+    public const string IdDeLosDiasCorridos = "dias-corridos-de-la-solicitud";
+
+    public const string IdDelEstado = "estado-de-la-solicitud";
+
+    /// <summary>Marcador del estado vacío. Distinguible del error, que vive en la página.</summary>
+    public const string IdDelEstadoVacio = "sin-solicitudes";
+
+    /// <summary>
+    /// Las solicitudes a mostrar, <b>en el orden en que llegan</b>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Por qué llegan por parámetro y este componente no consulta.</b> <c>AGENTS.md</c> prohíbe que
+    /// la UI toque la base, y el orden descendente por fecha de creación que exige AC-05 lo produce el
+    /// motor sirviendo el índice <c>IX_Solicitud_EmpleadoId_FechaCreacion</c> del Bloque 2. Reordenar
+    /// acá pondría el criterio en dos lugares: el día que uno cambie, la pantalla mostraría un orden y
+    /// el índice serviría otro. Este componente <b>no reordena</b>: renderiza la secuencia recibida.
+    /// </para>
+    /// </remarks>
+    [Parameter, EditorRequired]
+    public IReadOnlyList<SolicitudDelListado> Solicitudes { get; set; } = [];
+
+    /// <summary>
+    /// Formato fijo e independiente de la cultura del proceso: la fecha que ve el empleado no puede
+    /// depender de con qué configuración regional arrancó el servidor.
+    /// </summary>
+    private static string Dia(DateOnly fecha) => fecha.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
+
+    private static string Instante(DateTimeOffset instante) =>
+        instante.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture);
+}

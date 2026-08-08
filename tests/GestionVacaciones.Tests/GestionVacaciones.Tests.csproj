@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>GestionVacaciones.Tests</RootNamespace>
+    <AssemblyName>GestionVacaciones.Tests</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- La cadena de los tests de integración vive en user-secrets, fuera del repositorio,
+         porque el repo es público (R-02). Clave: ConnectionStrings:VacacionesTest -->
+    <UserSecretsId>gestion-vacaciones-v2-tests</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="bunit" Version="2.8.6" />
+    <PackageReference Include="coverlet.collector" Version="10.0.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GestionVacaciones.Data\GestionVacaciones.Data.csproj" />
+    <ProjectReference Include="..\..\src\GestionVacaciones.Web\GestionVacaciones.Web.csproj" />
+  </ItemGroup>
+
+</Project>

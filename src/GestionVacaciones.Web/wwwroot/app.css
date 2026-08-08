@@ -1,0 +1,33 @@
+/*
+ * Estilos propios de la aplicación. El sistema de componentes y su tipografía los aporta MudBlazor
+ * (MudBlazor.min.css, cargado desde App.razor): acá solo van los ajustes que MudBlazor no cubre.
+ */
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+}
+
+/*
+ * Aviso de circuito caído. El marcado vive en App.razor y blazor.web.js lo hace visible cuando la
+ * conexión con el servidor se pierde: acá solo se define cómo se ve mientras tanto (oculto).
+ */
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    padding: 0.6rem 1.25rem;
+    background: #ffe8e8;
+    color: #6d1f1f;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
+    z-index: 1000;
+}
+
+#blazor-error-ui .recargar {
+    color: inherit;
+    margin-left: 0.5rem;
+    text-decoration: underline;
+}

@@ -1,0 +1,204 @@
+@using GestionVacaciones.Data.Services
+@inject SolicitudesService Solicitudes
+@inject ILogger<FormularioDeAlta> Registro
+
+@* Alta de una solicitud de vacaciones (AC-01 a AC-04). *@
+
+<MudPaper Class="pa-4" Elevation="1" data-testid="@IdDelFormulario">
+    <MudText Typo="Typo.h2" Class="mb-4">Nueva solicitud</MudText>
+
+    <MudDatePicker Label="@EtiquetaFechaDeInicio"
+                   Date="_fechaDeInicio"
+                   DateChanged="ElegirLaFechaDeInicio"
+                   Variant="Variant.Outlined"
+                   Class="mb-4" />
+
+    <MudDatePicker Label="@EtiquetaFechaDeFin"
+                   Date="_fechaDeFin"
+                   DateChanged="ElegirLaFechaDeFin"
+                   Variant="Variant.Outlined"
+                   Class="mb-4" />
+
+    @* AC-01: el número aparece en cuanto hay período, ANTES de que el envío quede habilitado. *@
+    @if (DiasCorridosDelPeriodo is int diasCorridos)
+    {
+        <MudText data-testid="@IdDeLosDiasCorridos">@diasCorridos días corridos</MudText>
+    }
+
+    <MudButton Variant="Variant.Filled"
+               Color="Color.Primary"
+               Class="mt-4"
+               Disabled="@(!PuedeEnviarse)"
+               OnClick="EnviarAsync"
+               data-testid="@IdDelBotonDeEnvio">
+        Enviar solicitud
+    </MudButton>
+
+    @if (_mensajeDeError.Length > 0)
+    {
+        <MudAlert Severity="Severity.Error" Class="mt-4" data-testid="@IdDelError">@_mensajeDeError</MudAlert>
+    }
+</MudPaper>
+
+@code {
+    public const string IdDelFormulario = "formulario-de-alta";
+
+    /// <summary>Marcador del número de días corridos del período elegido (AC-01).</summary>
+    public const string IdDeLosDiasCorridos = "dias-corridos";
+
+    public const string IdDelBotonDeEnvio = "enviar-solicitud";
+
+    /// <summary>
+    /// Marcador del mensaje de validación. Lleva el literal que devuelve el servidor: acá no se
+    /// redacta ningún texto de rechazo.
+    /// </summary>
+    public const string IdDelError = "error-del-alta";
+
+    public const string EtiquetaFechaDeInicio = "Fecha de inicio";
+
+    public const string EtiquetaFechaDeFin = "Fecha de fin";
+
+    /// <summary>
+    /// Lo que se muestra cuando el alta <b>falla</b> —no cuando se rechaza—: la base caída, la
+    /// identidad sin resolver. Genérico a propósito (F-SAST-09): el detalle va al log, no a la
+    /// pantalla. No se parece a ningún literal del PRD, así que un test puede distinguirlos.
+    /// </summary>
+    public const string MensajeDeFalloInesperado =
+        "No se pudo registrar la solicitud. Volvé a intentarlo en unos minutos.";
+
+    /// <summary>
+    /// Empleado actual, <b>solo para el registro de diagnóstico</b> (R-12: el identificador y nada
+    /// más).
+    /// </summary>
+    /// <remarks>
+    /// <b>No es el autor de la solicitud.</b> El autor lo toma <see cref="SolicitudesService"/> de
+    /// <c>IEmpleadoActualProvider</c>, que es la única sede de la identidad (NFR-06); no existe
+    /// sobrecarga que lo reciba, justamente para que nadie pueda crear solicitudes a nombre de otro.
+    /// Llega por parámetro y no inyectando el proveedor porque la página ya resolvió la identidad
+    /// —solo renderiza este formulario cuando hay empleado— y pedirla de nuevo acá obligaría a repetir
+    /// el manejo del caso en que resolverla lanza (AC-06).
+    /// </remarks>
+    [Parameter, EditorRequired]
+    public int EmpleadoId { get; set; }
+
+    /// <summary>Se avisa cuando una solicitud queda creada, para que el listado se refresque.</summary>
+    [Parameter]
+    public EventCallback OnSolicitudCreada { get; set; }
+
+    private DateTime? _fechaDeInicio;
+    private DateTime? _fechaDeFin;
+    private string _mensajeDeError = string.Empty;
+    private bool _enviando;
+
+    /// <summary>
+    /// Hay período completo y no hay un envío en curso.
+    /// </summary>
+    /// <remarks>
+    /// <b>La condición es «están las dos fechas», no «el período es válido»</b>, y esa diferencia es
+    /// la mitigación R-10. Deshabilitar el botón ante un período inválido dejaría AC-02 y AC-03
+    /// resueltos en el cliente: un evento fuera de orden, o un cliente manipulado, esquivarían la
+    /// regla, y en el servidor no quedaría nada que la sostuviera. Quien decide si el período sirve es
+    /// <see cref="SolicitudesService"/>; este botón solo se asegura de que haya algo que preguntarle.
+    /// </remarks>
+    private bool PuedeEnviarse => _fechaDeInicio is not null && _fechaDeFin is not null && !_enviando;
+
+    /// <summary>
+    /// Los días corridos del período elegido, o <c>null</c> si todavía no hay período que contar.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// El número lo calcula <see cref="CalculadorDeDiasCorridos"/>, que es el mismo punto que usa el
+    /// alta al persistir: el PRD registra como riesgo que la interfaz muestre un número y el servicio
+    /// guarde otro, y la mitigación es que el cálculo viva en el dominio y acá se lo consuma.
+    /// </para>
+    /// <para>
+    /// <b>La comparación de las dos fechas es la precondición de <c>Contar</c>, no una validación.</b>
+    /// Un período invertido no tiene días corridos —<c>Contar</c> lanza si se los piden, y su
+    /// documentación pide expresamente no llamarlo entonces—, así que no hay número que mostrar. Lo
+    /// que <b>no</b> hace esta rama es decidir nada: no bloquea el envío ni redacta ningún mensaje. De
+    /// eso se ocupa el servidor, y por eso AC-03 sigue siendo verificable desde la interfaz.
+    /// </para>
+    /// </remarks>
+    private int? DiasCorridosDelPeriodo
+    {
+        get
+        {
+            if (_fechaDeInicio is not { } inicio || _fechaDeFin is not { } fin)
+            {
+                return null;
+            }
+
+            var desde = DateOnly.FromDateTime(inicio);
+            var hasta = DateOnly.FromDateTime(fin);
+
+            return hasta < desde ? null : CalculadorDeDiasCorridos.Contar(desde, hasta);
+        }
+    }
+
+    private void ElegirLaFechaDeInicio(DateTime? fecha) => ElegirFecha(ref _fechaDeInicio, fecha);
+
+    private void ElegirLaFechaDeFin(DateTime? fecha) => ElegirFecha(ref _fechaDeFin, fecha);
+
+    /// <summary>
+    /// Guarda la fecha y borra el mensaje anterior: el rechazo que se estaba mostrando hablaba del
+    /// período viejo, y dejarlo puesto haría creer que el nuevo también fue rechazado.
+    /// </summary>
+    private void ElegirFecha(ref DateTime? destino, DateTime? fecha)
+    {
+        destino = fecha;
+        _mensajeDeError = string.Empty;
+    }
+
+    /// <summary>
+    /// Le pide el alta al servidor y muestra lo que este conteste: el literal del PRD si el período se
+    /// rechaza (AC-02, AC-03), o el listado refrescado si queda creada.
+    /// </summary>
+    private async Task EnviarAsync()
+    {
+        if (_fechaDeInicio is not { } inicio || _fechaDeFin is not { } fin)
+        {
+            return;
+        }
+
+        _enviando = true;
+        _mensajeDeError = string.Empty;
+
+        try
+        {
+            // Las dos fechas viajan tal como se eligieron. Acá NO se comparan: el orden en que se
+            // validan, y con qué mensaje se rechaza cada caso, son contrato del servicio (R-10).
+            var resultado = await Solicitudes.CrearAsync(
+                DateOnly.FromDateTime(inicio),
+                DateOnly.FromDateTime(fin));
+
+            if (!resultado.FueCreada)
+            {
+                // El literal del PRD, tal cual llega. Reformularlo acá rompería AC-02 o AC-03, que son
+                // criterios sobre el texto exacto.
+                _mensajeDeError = resultado.MensajeDeError;
+                return;
+            }
+
+            _fechaDeInicio = null;
+            _fechaDeFin = null;
+
+            await OnSolicitudCreada.InvokeAsync();
+        }
+        catch (Exception excepcion)
+        {
+            // No es un catch silencioso: queda registrado con el identificador del empleado y nada más
+            // —ni nombre ni correo (R-12)—. Al usuario le llega un mensaje genérico, nunca la traza
+            // (F-SAST-09).
+            Registro.LogError(
+                excepcion,
+                "Falló el alta de una solicitud del empleado {EmpleadoId}.",
+                EmpleadoId);
+
+            _mensajeDeError = MensajeDeFalloInesperado;
+        }
+        finally
+        {
+            _enviando = false;
+        }
+    }
+}

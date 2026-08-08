@@ -1,0 +1,130 @@
+@using GestionVacaciones.Data.Services
+@inject IEmpleadoActualProvider EmpleadoActual
+@inject EmpleadosService Nomina
+@inject ILogger<SelectorDeEmpleado> Registro
+
+@* Elección del empleado actual del circuito (AC-07). Solo se renderiza donde el proveedor de
+   identidad contesta que se puede elegir, que es el sustituto de desarrollo y nada más (R-01). *@
+
+<div data-testid="@IdDelSelector">
+    <MudSelect T="int?"
+               Label="@Etiqueta"
+               Value="_empleadoElegido"
+               ValueChanged="ElegirAsync"
+               Variant="Variant.Outlined"
+               Dense="true">
+        @foreach (var empleado in _nomina)
+        {
+            <MudSelectItem T="int?" Value="@((int?)empleado.Id)">@empleado.Nombre</MudSelectItem>
+        }
+    </MudSelect>
+
+    @if (_mensajeDeError.Length > 0)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mt-2" data-testid="@IdDelError">@_mensajeDeError</MudAlert>
+    }
+</div>
+
+@code {
+    /// <summary>
+    /// Marcador del selector. Es lo que la página muestra <b>en lugar</b> de un listado vacío cuando
+    /// todavía no hay empleado elegido, y lo que un test usa para distinguir esa situación.
+    /// </summary>
+    public const string IdDelSelector = "selector-de-empleado";
+
+    /// <summary>
+    /// Marcador de los fallos <b>del selector</b>. Separado del de la página a propósito: que no se
+    /// pueda leer la nómina y que no se puedan leer las solicitudes son dos problemas distintos, y
+    /// colapsarlos haría que un test no pudiera decir cuál ocurrió.
+    /// </summary>
+    public const string IdDelError = "error-del-selector";
+
+    public const string Etiqueta = "Empleado actual";
+
+    /// <summary>Genérico: el detalle va al log, nunca a la pantalla (F-SAST-09).</summary>
+    public const string MensajeDeFalloInesperado = "No se pudo cargar la nómina de empleados.";
+
+    /// <summary>
+    /// El identificador recibido no existe en la nómina. Se conserva el empleado anterior y se lo
+    /// dice: cambiar la identidad en silencio ante una entrada inválida es peor que rechazarla.
+    /// </summary>
+    public const string MensajeDeSeleccionRechazada = "El empleado elegido ya no figura en la nómina.";
+
+    /// <summary>
+    /// Se avisa cuando el empleado actual cambió de verdad, para que quien aloje este selector vuelva
+    /// a pedir lo que dependa de la identidad.
+    /// </summary>
+    /// <remarks>
+    /// <b>Por qué un callback y no que cada pantalla se entere sola.</b> AC-07 exige que el listado
+    /// pase a mostrar las solicitudes del empleado nuevo; sin este aviso, quien aloja el selector no
+    /// tiene forma de saber que la identidad cambió y la pantalla seguiría mostrando las del anterior.
+    /// </remarks>
+    [Parameter]
+    public EventCallback OnEmpleadoCambiado { get; set; }
+
+    private IReadOnlyList<EmpleadoDeLaNomina> _nomina = [];
+    private int? _empleadoElegido;
+    private string _mensajeDeError = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _nomina = await Nomina.ListarNominaAsync();
+        }
+        catch (Exception excepcion)
+        {
+            // Que la nómina no se pueda leer no puede tumbar la pantalla entera: es un desplegable, no
+            // el contenido. Queda registrado —sin ningún dato de ninguna persona, R-12— y en pantalla
+            // solo el aviso genérico.
+            Registro.LogError(excepcion, "No se pudo leer la nómina que alimenta el selector de empleado.");
+
+            _mensajeDeError = MensajeDeFalloInesperado;
+        }
+    }
+
+    /// <summary>
+    /// Cambia el empleado actual del circuito. El identificador llega del navegador (TB-1) y quien lo
+    /// valida contra la nómina es el proveedor, no este componente.
+    /// </summary>
+    private async Task ElegirAsync(int? empleadoId)
+    {
+        _mensajeDeError = string.Empty;
+
+        if (empleadoId is not { } elegido)
+        {
+            return;
+        }
+
+        try
+        {
+            var resultado = await EmpleadoActual.SeleccionarAsync(elegido);
+
+            if (resultado is ResultadoDeSeleccion.RechazadaPorEmpleadoInexistente)
+            {
+                // Se conserva el empleado anterior, también en el desplegable: dejarlo mostrando uno
+                // que no quedó seleccionado haría que la pantalla mintiera sobre de quién son las
+                // solicitudes que está listando.
+                Registro.LogWarning(
+                    "Se intentó seleccionar el empleado {EmpleadoId}, que no figura en la nómina.",
+                    elegido);
+
+                _mensajeDeError = MensajeDeSeleccionRechazada;
+                return;
+            }
+
+            _empleadoElegido = elegido;
+
+            await OnEmpleadoCambiado.InvokeAsync();
+        }
+        catch (Exception excepcion)
+        {
+            Registro.LogError(
+                excepcion,
+                "Falló el cambio de empleado actual al empleado {EmpleadoId}.",
+                elegido);
+
+            _mensajeDeError = MensajeDeFalloInesperado;
+        }
+    }
+}

@@ -1,0 +1,8 @@
+@* Enrutador de la aplicación. La única ruta de FEAT-001a es «/», la pantalla propia del empleado
+   (Components/Pages/MisSolicitudes.razor). *@
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="rutaEncontrada">
+        <RouteView RouteData="rutaEncontrada" DefaultLayout="typeof(MainLayout)" />
+        <FocusOnNavigate RouteData="rutaEncontrada" Selector="h1" />
+    </Found>
+</Router>
